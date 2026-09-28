@@ -11,6 +11,20 @@ files:
   - '!**/*.{dll,DLL,so,SO,bin,BIN,iso,ISO,chd,nds,gba,mp3,mp4,pdf,log,part}'
 asarUnpack:
   - resources/**
+beforePack: scripts/validate-emulators.cjs
+extraResources:
+  - from: emulators/retroarch
+    to: emulators/retroarch
+    filter:
+      - '**/*'
+      - '!**/*.log'
+      - '!**/.gitkeep'
+      # A development installation can contain private BIOS and user data.
+      - '!{system,saves,states,screenshots,thumbnails,records,recordings,config,cheats,downloads,playlists,logs,cache,media,games,roms}{,/**/*}'
+      - '!**/*.{iso,ISO,bin,BIN,chd,CHD,rom,ROM,log,LOG,part,tmp,srm,state,lpl}'
+      - '!retroarch.cfg'
+      - '!retroarch-core-options.cfg'
+      - '!session.cfg'
 win:
   target:
     - nsis

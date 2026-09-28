@@ -12,6 +12,7 @@ const assets = new Set([
   ...['navigate', 'toggle', 'launch'].map((n) => 'src/renderer/src/assets/sounds/' + n + '.wav')
 ])
 const files = git('ls-files', '-z').toString().split('\0').filter(Boolean)
+const placeholders = new Set(['emulators/retroarch/.gitkeep', 'emulators/retroarch/cores/.gitkeep'])
 let ignored = ''
 try {
   ignored = execFileSync('git', ['check-ignore', '--no-index', '-z', '--stdin'], {
@@ -24,6 +25,10 @@ try {
 const violations = new Set(ignored.split('\0').filter((f) => f && !assets.has(f)))
 for (const file of files) {
   if (assets.has(file)) continue
+  if (placeholders.has(file) && git('show', ':' + file).length === 0) {
+    violations.delete(file)
+    continue
+  }
   if (
     /(^|\/)(emulators|games|roms|bios|firmware|media|cores|saves|states|manuals|videos|music|cache)(\/|$)/i.test(
       file

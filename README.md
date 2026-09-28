@@ -210,18 +210,18 @@ BIOS dosyaları indirilmez; kullanıcı kendi dökümünü seçer.
 
 ## Konsol kontrolleri ve ayarlar
 
-| İşlem                      | Gamepad                           | Klavye                                  |
-| -------------------------- | --------------------------------- | --------------------------------------- |
-| Oyun başlat                | A                                 | Enter                                   |
-| Oyun seçenekleri / Kılavuz | Y → Guide & Lore                  | O / H                                   |
-| Arama                      | X                                 | /                                       |
-| Filtre paneli              | View                              | F                                       |
-| Konsol değiştir            | LB / RB                           | PageUp / PageDown                       |
-| Ayarlar                    | Menu                              | Context Menu tuşu veya Settings düğmesi |
-| Oyun ekle                  | R3                                | + / Insert                              |
-| Oyun sil                   | L3                                | Delete                                  |
-| Geri / kapat               | B                                 | Escape                                  |
-| Zenith menüsü (ana ekran / oyun içi) | View + Menu / Home | Escape / F10 |
+| İşlem                                | Gamepad            | Klavye                                  |
+| ------------------------------------ | ------------------ | --------------------------------------- |
+| Oyun başlat                          | A                  | Enter                                   |
+| Oyun seçenekleri / Kılavuz           | Y → Guide & Lore   | O / H                                   |
+| Arama                                | X                  | /                                       |
+| Filtre paneli                        | View               | F                                       |
+| Konsol değiştir                      | LB / RB            | PageUp / PageDown                       |
+| Ayarlar                              | Menu               | Context Menu tuşu veya Settings düğmesi |
+| Oyun ekle                            | R3                 | + / Insert                              |
+| Oyun sil                             | L3                 | Delete                                  |
+| Geri / kapat                         | B                  | Escape                                  |
+| Zenith menüsü (ana ekran / oyun içi) | View + Menu / Home | Escape / F10                            |
 
 Medya sesini RT / M ile açıp kapatın; LT / R ile kütüphaneyi yeniden tarayın.
 
@@ -378,7 +378,7 @@ $ npm run build:linux
 - Linux oyun klasörü geliştirmede de userData/games/ olur. Paketlenmiş Linux'ta emülatör klasörleri app.getPath('userData') altındadır;
   tipik yol ~/.config/zenith/emulators/retroarch/retroarch. AppImage mount dizinine yazılmaz.
 - Linux RetroArch dosyasına çalıştırma izni verilmiş olmalıdır. Windows DLL'leri Linux'ta
-  yüklenmez; sistemine uygun .so çekirdeği indirilir. RetroArch'ın kendisi ayrıca kurulmalıdır.
+  yüklenmez; sistemine uygun .so çekirdeği indirilir. Paketli uygulama gömülü RetroArch'ı ilk açılışta userData'ya hazırlar.
 - Steam Deck'te AppImage'a çalıştırma izni verip Steam'e Steam dışı oyun olarak ekleyin;
   Steam Input için standart Gamepad düzenini kullanın. Steam/Guide tuşunu SteamOS ayırabilir.
   Linux oyun içi köprüsü sistemde Python 3 ve SDL2 varsa gamepad kombinasyonlarını
@@ -414,3 +414,38 @@ Tam dosya/IPC envanteri, Gözat çekirdek akışı, katkı ve telif sınırları
 `npm run check:distribution` Git indeksindeki yasak runtime dosyalarını denetler;
 `git config core.hooksPath .githooks` yerel pre-commit korumasını etkinleştirir.
 Geçmiş commit’ler ve asset lisansları yayın öncesi ayrıca gözden geçirilmelidir.
+
+## RetroArch: geliştirici kurulumu ve üretim paketi
+
+```sh
+npm ci
+npm run setup:emulators
+npm run dev
+# Windows x64 installer + portable:
+npm run build:win
+# Linux host, native Linux RetroArch prepared first:
+npm run build:linux
+```
+
+- Windows x64 bootstrap, [resmi stable dizininden](https://buildbot.libretro.com/stable/)
+  en yüksek kararlı sürümü bulur, `RetroArch.7z` arşivini akışla indirir ve
+  `emulators/retroarch/` altına çıkarır. 7-Zip geliştirme bağımlılığı npm ile gelir.
+  Mevcut `retroarch.exe` varsa kurulum korunur; otomatik güncelleme/üzerine yazma yapılmaz.
+- Linux'ta script klasör iskeletini hazırlar ve kurulum yönergesini gösterir;
+  otomatik Linux binary indirmesi yapmaz. Native x64 RetroArch ve bağımlılıklarını
+  `emulators/retroarch/` içine hazırlayın; `retroarch` çalıştırılabilir olmalıdır.
+  Windows üzerinde Linux paketi için Windows emülatörünü kullanmayın.
+- Git yalnız iki boş `.gitkeep` dosyasını içerir. `extraResources` yerel RetroArch'ı
+  `resources/emulators/retroarch/` içine, ASAR dışında paketler. BIOS/system,
+  kişisel config, kayıt, ROM, önbellek ve log dizinleri pakete alınmaz.
+  Programın DLL'leri, assets ve yereldeki cores dahil edilir; lisans dosyaları korunur.
+- `beforePack` hedef işletim sisteminin çalıştırılabilir dosyasını doğrular;
+  eksik/yanlış kurulumla son kullanıcı paketi oluşturmayı durdurur.
+- Windows ve Linux paketleri ilk açılışta RetroArch'ı
+  `app.getPath('userData')/emulators/retroarch/` altına bir kez kopyalar.
+  Böylece cores/BIOS yazımı Program Files veya salt okunur AppImage'a yapılmaz.
+  Mevcut kullanıcı kurulumu korunur; uygulama güncellemesi onu otomatik değiştirmez.
+- `npm run build` yalnız Main/Preload/Renderer derlemesidir; installer üretmez.
+  Emülatör gömme işlemi `build:win`, `build:linux` ve `build:unpack` ile gerçekleşir.
+- Dağıtılan RetroArch ve seçilen core'ların lisans/kaynak sağlama yükümlülükleri
+  release hazırlığının parçasıdır; `.gitignore` Git koruması ile paketleme aynı şey değildir.

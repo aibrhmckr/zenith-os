@@ -24,6 +24,17 @@ test('commit guard rejects forced ROMs and renamed executables, preserving ordin
       { cwd: root, encoding: 'utf8' }
     )
   assert.equal(check().status, 0)
+  for (const folder of ['emulators/retroarch', 'emulators/retroarch/cores']) {
+    fs.mkdirSync(path.join(root, folder), { recursive: true })
+    fs.writeFileSync(path.join(root, folder, '.gitkeep'), '')
+    git('add', folder + '/.gitkeep')
+  }
+  assert.equal(check().status, 0, 'Empty emulator skeleton is committable')
+  fs.writeFileSync(path.join(root, 'emulators/retroarch/.gitkeep'), 'MZnot an empty placeholder')
+  git('add', 'emulators/retroarch/.gitkeep')
+  assert.equal(check().status, 1, 'Placeholder exception cannot smuggle content')
+  fs.writeFileSync(path.join(root, 'emulators/retroarch/.gitkeep'), '')
+  git('add', 'emulators/retroarch/.gitkeep')
   for (const extension of [
     'A26',
     'A78',

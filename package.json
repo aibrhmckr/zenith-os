@@ -6,6 +6,7 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "scripts": {
+    "setup:emulators": "node scripts/setup-emulators.mjs",
     "format": "prettier --write .",
     "lint": "eslint --cache .",
     "start": "electron-vite preview",
@@ -43,6 +44,7 @@
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "7zip-bin": "^5.2.0",
     "autoprefixer": "^10.6.1",
     "electron": "^39.2.6",
     "electron-builder": "^26.0.12",

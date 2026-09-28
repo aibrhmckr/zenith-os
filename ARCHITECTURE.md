@@ -3,7 +3,9 @@
 Bu belge 28 Eylül 2026 tarihindeki kaynak ağacını açıklar. Tasarlanan gelecekteki
 modüller ile çalışan kod birbirinden ayrılmıştır. Zenith bir Electron masaüstü
 başlatıcısıdır; bağımsız bir çekirdek/işletim sistemi değildir. ROM, BIOS,
-RetroArch kurulumu ve indirilen oyun medyası kaynak kod dağıtımının parçası değildir.
+RetroArch kurulumu ve indirilen oyun medyası Git kaynak kod dağıtımının parçası değildir.
+Üretim installer'ı RetroArch programını ayrı `extraResources` olarak içerir;
+BIOS, ROM ve kişisel çalışma verileri dahil edilmez.
 
 ## 1. Genel sistem mimarisi ve teknoloji yığını
 
@@ -182,7 +184,7 @@ hooks altında; iş verisi React state ve Main JSON dosyalarında bulunur. Paket
 | `.github/workflows/ci.yml`                                                            | Push/PR: npm ci, dağıtım kontrolü, lint, Node birim testleri, build; yayın/deploy yok.                                                                                                                                |
 | `package.json`, `package-lock.json`                                                   | Komutlar, bağımlılıklar ve kilitli çözümleme.                                                                                                                                                                         |
 | `electron.vite.config.mjs`                                                            | Main/preload/renderer build; `@renderer` alias'ı, React plugin. `@/` alias'ı tanımlı değildir.                                                                                                                        |
-| `electron-builder.yml`                                                                | Sadece out, package.json ve üç resources dosyasının paketlenmesi; runtime binary dışlamaları; resources asarUnpack; platform hedefleri. Publish URL/author şablondur, release öncesi düzenlenmelidir.                 |
+| `electron-builder.yml`                                                                | ASAR uygulama allowlist’i; extraResources ile RetroArch; kişisel runtime verilerinin dışlanması; beforePack doğrulaması; platform hedefleri. Publish URL/author şablondur, release öncesi düzenlenmelidir.            |
 | `eslint.config.mjs`, `.prettierrc.yaml`, `.prettierignore`, `.editorconfig`           | Lint/format/editor sözleşmesi.                                                                                                                                                                                        |
 | `postcss.config.js`, `tailwind.config.js`                                             | PostCSS/Tailwind yapılandırması; Tailwind4 giriş noktası main.css'tir.                                                                                                                                                |
 | `.gitignore`                                                                          | Dinamik dosyalar, BIOS/core/ROM/disk/medya, tüm emulators ağacı; büyük-küçük harf varyantlarını da kapsar.                                                                                                            |
@@ -293,18 +295,18 @@ SHA-256'nın 12 hex karakterinden oluşur; eski import kayıtlarında importKey 
 Yıl/geliştirici/tür scraper'da null kalabilir; Wikipedia lore ayrı önbellektir,
 her metadata alanının otomatik dolduğu varsayılmamalıdır.
 
-| Yer                                                           | İçerik                                                                                                                                         |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Windows geliştirme kökü                                       | `games/`, `emulators/retroarch/{retroarch.exe,cores/,system/}`.                                                                                |
-| Windows packaged                                              | Portable env dizini veya executable dizini runtime root. Program Files yazma izni otomatik çözümlenmez; portable/writable kurulum tercih edin. |
-| Linux                                                         | games daima userData/games; development emülatörü proje kökünde, packaged emülatör userData/emulators/retroarch altında.                       |
-| userData/library.json                                         | Imported paths ve excluded paths.                                                                                                              |
-| userData/games.json                                           | Scraper metadata/media manifesti; ROM dosyası burada değildir.                                                                                 |
-| userData/zenith-preferences.json                              | Native hotkeys; diğer renderer tercihleri localStorage'dadır.                                                                                  |
-| userData/core-catalog-win32.json veya core-catalog-linux.json | Çekirdek dosya adı cache'i.                                                                                                                    |
-| userData/core-selections.json                                 | `game:<gameId>` veya `platform:<system>` → core dosya adı.                                                                                     |
-| userData/media/{gameId}/                                      | boxart.png, snap.png, title.png, theme.mp3, preview.mp4, lore.json, manual metadata/pages, session.cfg, saves/, states/.                       |
-| localStorage                                                  | zenith-preferences (ses/hotkeys), zenith-language, zenith-keyboard.                                                                            |
+| Yer                                                           | İçerik                                                                                                                                                                |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows geliştirme kökü                                       | `games/`, `emulators/retroarch/{retroarch.exe,cores/,system/}`.                                                                                                       |
+| Windows packaged                                              | Oyun kökü portable env veya executable dizinidir. RetroArch ilk açılışta resources'tan userData/emulators/retroarch altına hazırlanır; cores/BIOS burada yazılabilir. |
+| Linux                                                         | games daima userData/games; development emülatörü proje kökünde, packaged emülatör userData/emulators/retroarch altında.                                              |
+| userData/library.json                                         | Imported paths ve excluded paths.                                                                                                                                     |
+| userData/games.json                                           | Scraper metadata/media manifesti; ROM dosyası burada değildir.                                                                                                        |
+| userData/zenith-preferences.json                              | Native hotkeys; diğer renderer tercihleri localStorage'dadır.                                                                                                         |
+| userData/core-catalog-win32.json veya core-catalog-linux.json | Çekirdek dosya adı cache'i.                                                                                                                                           |
+| userData/core-selections.json                                 | `game:<gameId>` veya `platform:<system>` → core dosya adı.                                                                                                            |
+| userData/media/{gameId}/                                      | boxart.png, snap.png, title.png, theme.mp3, preview.mp4, lore.json, manual metadata/pages, session.cfg, saves/, states/.                                              |
+| localStorage                                                  | zenith-preferences (ses/hotkeys), zenith-language, zenith-keyboard.                                                                                                   |
 
 İndirilen oyun medyası proje köküne yazılmaz. Eski userData/media/music ve videos
 yolları geriye uyumlu okunabilir; proje kökündeki media klasörü download hedefi değildir.
@@ -497,10 +499,11 @@ alanları release öncesi proje sahiplerince gerçek değerlere çevrilmelidir.
   ve bazı yeniden adlandırılmış binary imzalarını da denetler. Hook bypass
   edilebilir; CI job'unu branch protection'da required yapmak depo sahibinin
   yapılandırmasıdır. Keyfi dosyanın telifini içerikten otomatik ispatlayamaz.
-- electron-builder kaynak allowlist'i yalnız derlenmiş uygulama ve uygulama
-  kaynaklarını paketler. Core indirmesi runtime'dadır; core ikilileri npm/Git/release
-  payload'ı olarak dağıtılmaz. Core'ların kendi lisansları ve kaynak yükümlülükleri
-  proje açık kaynak olsa bile ayrıdır.
+- electron-builder `files` allowlist'i derlenmiş uygulama ve uygulama kaynaklarını
+  ASAR'a alır. `extraResources`, yerel RetroArch programını ve varsa cores ikililerini
+  ASAR dışında üretim paketine ekler; Git'e eklemez. BIOS/system, ROM, kayıt ve
+  kişisel medya/config dizinleri hariçtir. RetroArch/core lisansları ve kaynak sağlama
+  yükümlülükleri, proje açık kaynak olsa bile ayrıca release aşamasında karşılanmalıdır.
 - Bu değişiklikte yerel RetroArch dosyaları silinmeden indeksten çıkarıldı.
   **Eski commit'ler değiştirilmedi.** Kamuya açmadan önce tüm Git geçmişi ve
   önceden oluşturulmuş release/artefact'lar ayrıca denetlenmelidir; yalnız yeni
@@ -522,3 +525,27 @@ Kaynaklar: [Git ignore davranışı](https://git-scm.com/docs/gitignore),
 [resmi Linux çekirdek kataloğu](https://buildbot.libretro.com/nightly/linux/x86_64/latest/),
 [Libretro core bilgi dosyaları](https://github.com/libretro/libretro-core-info),
 [Internet Archive kullanım şartları](https://archive.org/about/terms).
+
+## 7. Hibrit RetroArch dağıtımı
+
+| Dosya                                                            | Sorumluluk                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| scripts/setup-emulators.mjs                                      | setup:emulators: Windows/Linux x64 algılama; Windows için resmi stable dizininde sayısal sürüm sıralaması, 15 saniye index timeout, 10 dakika/1 GiB akış indirmesi, 7zip-bin ile arşiv yol/link doğrulaması ve çıkarma. Geçici staging finally temizlenir. Mevcut executable varsa kurulum değiştirilmez. Linux'ta iskelet ve native kurulum yönergesi; otomatik Linux indirmesi yok. |
+| scripts/validate-emulators.cjs                                   | electron-builder beforePack: hedef OS'nin retroarch.exe (MZ) veya retroarch (ELF) dosyası yok/yanlışsa üretim paketlemesini durdurur. Bir lisans veya tam binary bütünlük doğrulaması değildir.                                                                                                                                                                                       |
+| src/main/services/bundledRuntime.js                              | seedBundledRetroArch: paketli uygulamada resources/emulators/retroarch dizinini ilk açılışta userData/emulators/retroarch dizinine asenkron kopyalar. Var olan kullanıcı dosyalarını korur, executable en son yayınlanır. Linux çalıştırma izni atanır. Hata Main tarafından gösterilir ve uygulama kapanır.                                                                          |
+| emulators/retroarch/.gitkeep, emulators/retroarch/cores/.gitkeep | Git'e girebilen yalnız boş iskelet dosyaları; guard içerik eklenmiş placeholder'ı reddeder.                                                                                                                                                                                                                                                                                           |
+| tests/emulator-bootstrap.test.mjs                                | Gerçek küçük 7z fixture ile indirme/çıkarma; semver seçimi; traversal/link reddi; boyut/hata temizliği; mevcut kurulumun korunması; Linux ayrımı; paket önkontrolü ve userData seeding.                                                                                                                                                                                               |
+
+Akış: npm ci → npm run setup:emulators → geliştirmede proje RetroArch dizini →
+build:win/build:linux (beforePack) → extraResources → son kullanıcı resources dizini →
+ilk açılışta userData'ya seed → mevcut launch-game/core/BIOS servisleri.
+IPC değişmez. npm run build yalnız Vite derlemesidir; installer oluşturmaz.
+Paketli uygulamada seeding pencere oluşturulmadan önce beklenir; ilk açılış kopya
+boyutuna göre uzayabilir. Sonraki açılışlar kopyalamaz. Uygulama güncellemesi
+kullanıcının RetroArch sürümünü otomatik yükseltmez. Eski paketlerin executable
+yanındaki RetroArch kurulumu otomatik taşınmaz; gerekirse kullanıcı profilinin
+emulators/retroarch dizinine elle taşınır. Oyun kütüphanesi yolu değişmez.
+
+Resmi kaynak: [Libretro kararlı dağıtımlar](https://buildbot.libretro.com/stable/).
+7zip-bin yalnız geliştirme bağımlılığıdır; bootstrap otomatik postinstall değildir.
+Temiz bir klondan installer üretmeden önce hedef OS RetroArch kurulumu hazırlanmalıdır.

@@ -249,7 +249,8 @@ trailers/**
 !src/renderer/src/assets/sounds/launch.wav
 
 # Imported emulator installations, firmware and extra cartridge/disk formats.
-emulators/
+emulators/*
+!emulators/retroarch/
 [fF][iI][rR][mM][wW][aA][rR][eE]/
 [cC][aA][cC][hH][eE]/
 [cC][oO][rR][eE][sS]/
@@ -344,3 +345,10 @@ emulators/
 *.[sS][tT][aA][tT][eE]
 
 # Shared text/config extensions cannot identify ROM content: confine runtime files to ignored directories.
+
+# Keep only the empty developer skeleton visible, including the ignored cores parent.
+emulators/retroarch/*
+!emulators/retroarch/.gitkeep
+!emulators/retroarch/cores/
+emulators/retroarch/cores/*
+!emulators/retroarch/cores/.gitkeep

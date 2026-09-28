@@ -20,7 +20,9 @@ export function runtimePaths({
     : platform === 'linux'
       ? userData
       : portableDirectory || paths.dirname(executable)
-  const retroarchDir = paths.join(root, 'emulators', 'retroarch')
+  // Installed resources can be read-only (Program Files, AppImage, /opt).
+  // Seed a private writable runtime from process.resourcesPath on first launch.
+  const retroarchDir = paths.join(packaged ? userData : root, 'emulators', 'retroarch')
   return {
     root,
     retroarchDir,

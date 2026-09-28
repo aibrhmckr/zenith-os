@@ -25,7 +25,8 @@ test('Windows portable and Linux AppImage/deb paths use native executable names 
     userData: 'C:\\Profile',
     portableDirectory: 'D:\\Zenith'
   })
-  assert.equal(windows.retroarchExecutable, 'D:\\Zenith\\emulators\\retroarch\\retroarch.exe')
+  assert.equal(windows.retroarchExecutable, 'C:\\Profile\\emulators\\retroarch\\retroarch.exe')
+  assert.equal(windows.gamesDirectory, 'D:\\Zenith\\games')
   const development = runtimePaths({
     platform: 'linux',
     appPath: '/code/zenith',

@@ -18,6 +18,7 @@ import { createCoreCatalog, biosPlatformForCore } from './services/coreCatalog'
 import { createGameImporter } from './services/gameImporter'
 import { normalizeHotkeys } from '../shared/hotkeys'
 import { runtimePaths, pathKey } from './services/platform'
+import { seedBundledRetroArch } from './services/bundledRuntime'
 
 const { gamesDirectory, retroarchDir, retroarchExecutable } = runtimePaths({
   packaged: app.isPackaged,
@@ -404,7 +405,20 @@ function createWindow() {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (app.isPackaged) {
+    try {
+      await seedBundledRetroArch({ resourcesPath: process.resourcesPath, retroarchDir })
+    } catch (error) {
+      await dialog.showMessageBox({
+        type: 'error',
+        message: 'RetroArch initialization failed',
+        detail: error.message
+      })
+      app.quit()
+      return
+    }
+  }
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
