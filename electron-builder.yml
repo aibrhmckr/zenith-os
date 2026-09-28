@@ -1,0 +1,47 @@
+appId: com.electron.app
+productName: zenith
+directories:
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - resources/icon.png
+  - resources/gamepad-bridge.ps1
+  - resources/gamepad-bridge.py
+  - '!**/*.{dll,DLL,so,SO,bin,BIN,iso,ISO,chd,nds,gba,mp3,mp4,pdf,log,part}'
+asarUnpack:
+  - resources/**
+win:
+  target:
+    - nsis
+    - portable
+  executableName: zenith
+portable:
+  artifactName: ${name}-${version}-${arch}-portable.${ext}
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+mac:
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+dmg:
+  artifactName: ${name}-${version}.${ext}
+linux:
+  target:
+    - AppImage
+    - deb
+  maintainer: electronjs.org
+  category: Game
+appImage:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+publish:
+  provider: generic
+  url: https://example.com/auto-updates
