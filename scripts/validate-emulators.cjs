@@ -1,8 +1,10 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const { configureNsisProcess } = require('./nsis-process.cjs')
 
 // Fail packaging instead of silently shipping a launcher without its emulator.
 module.exports = async ({ electronPlatformName, packager }) => {
+  if (electronPlatformName === 'win32') configureNsisProcess()
   if (!['win32', 'linux'].includes(electronPlatformName)) {
     throw Error('Bundled RetroArch supports Windows and Linux only.')
   }

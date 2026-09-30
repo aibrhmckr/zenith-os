@@ -155,17 +155,11 @@ test('builder resource filter includes RetroArch dependencies but excludes BIOS,
     resource.filter
   ).createFilter()
   const file = { isDirectory: () => false }
-  for (const name of [
-    'retroarch.exe',
-    'retroarch',
-    'avcodec.dll',
-    'cores/stella_libretro.dll',
-    'assets/font.ttf',
-    'COPYING'
-  ]) {
+  for (const name of ['retroarch.exe', 'retroarch', 'avcodec.dll', 'assets/font.ttf', 'COPYING']) {
     assert.equal(accept(path.join(source, name), file), true, name)
   }
   for (const name of [
+    'cores/stella_libretro.dll',
     'system/pcsx2/bios/scph.bin',
     'system/dc/dc_boot.bin',
     'saves/game.srm',

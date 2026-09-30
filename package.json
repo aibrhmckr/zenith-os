@@ -23,7 +23,7 @@
     "test:media-paths": "node --test tests/media-paths.test.mjs",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win nsis portable --x64",
+    "build:win": "npm run build && electron-builder --win nsis --x64",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux AppImage deb --x64",
     "test:console-services": "node --test tests/console-services.test.mjs",
@@ -33,15 +33,19 @@
     "test:hotkeys": "npm run build && electron tests/hotkeys.cjs",
     "check:distribution": "node scripts/check-distribution.mjs",
     "test:core-catalog": "node --test tests/core-catalog.test.mjs",
-    "test:core-browser": "npm run build && electron tests/core-browser.cjs"
+    "test:core-browser": "npm run build && electron tests/core-browser.cjs",
+    "test:core-download": "npm run build && electron tests/core-download.cjs",
+    "test:runtime-startup": "npm run build && electron tests/runtime-startup.cjs && electron tests/runtime-startup.cjs --critical"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
-    "@electron-toolkit/utils": "^4.0.0"
+    "@electron-toolkit/utils": "^4.0.0",
+    "@rollup/rollup-win32-x64-msvc": "^4.63.5"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
+    "@rollup/wasm-node": "^4.63.5",
     "@tailwindcss/postcss": "^4.3.3",
     "@vitejs/plugin-react": "^5.1.1",
     "7zip-bin": "^5.2.0",

@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, protocol, net, dialog, globalShortcut } from 'electron'
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
-import { basename, dirname, extname, join, parse } from 'node:path'
+import { basename, dirname, extname, join, parse, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -37,6 +37,7 @@ try {
 }
 const cores = createCoreManager({ retroarchDir })
 const coreCatalog = createCoreCatalog({ retroarchDir, userData: app.getPath('userData') })
+let retroarchPreparation = Promise.resolve(null)
 let library
 const getLibrary = () => (library ||= createLibraryStore(app.getPath('userData')))
 let activeChild = null
@@ -239,6 +240,10 @@ async function launchGame(event, request) {
   if (launchInProgress) return { success: false, error: 'A game is already running or launching.' }
   launchInProgress = true
   try {
+    const preparationError = await retroarchPreparation
+    if (preparationError) {
+      return await showLaunchError(`RetroArch preparation failed: ${preparationError.message}`)
+    }
     const { gamePath, consoleType } = request || {}
     if (typeof gamePath !== 'string' || typeof consoleType !== 'string') {
       return await showLaunchError('Invalid game request.')
@@ -276,13 +281,32 @@ async function launchGame(event, request) {
       stateDir = join(runtime, 'states')
     fs.mkdirSync(saveDir, { recursive: true })
     fs.mkdirSync(stateDir, { recursive: true })
-    const config = join(runtime, 'session.cfg')
+    const config = resolve(runtime, 'session.cfg')
     const quote = (value) => '"' + value.replace(/\\/g, '/').replace(/"/g, '') + '"'
     fs.writeFileSync(
       config,
       [
         'pause_nonactive = true',
         'config_save_on_exit = false',
+        // Apply synchronization on every launch, including existing user installations.
+        'video_vsync = "true"',
+        'video_refresh_rate = "60.0"',
+        'audio_sync = "true"',
+        'audio_rate_control = "true"',
+        'fastforward_ratio = "1.0"',
+        'video_max_swapchain_images = "3"',
+        'vrr_runloop_enable = "true"',
+        'notification_show_osd = "false"',
+        'notification_show_autoconfig = "false"',
+        'video_osd_widgets = "false"',
+        'notification_show_core_load = "false"',
+        // Disable the classic text OSD as well as modern notification widgets.
+        'video_font_enable = "false"',
+        // XAudio is Windows-specific; preserve the native driver on Linux/Steam Deck.
+        ...(process.platform === 'win32' ? ['audio_driver = "xaudio"'] : []),
+        'audio_enable = "true"',
+        'audio_mute_enable = "false"',
+        'audio_volume = "0.0"',
         'input_menu_toggle_gamepad_combo = "0"',
         'input_menu_toggle_btn = "nul"',
         'input_menu_toggle = "nul"',
@@ -294,9 +318,10 @@ async function launchGame(event, request) {
       ].join('\n')
     )
 
+    const corePath = cores.pathFor(core)
+    if (!corePath) return { success: false, error: 'missing_core', platform: consoleType }
     // Keep the IPC request pending until exit so the UI cannot launch a second session.
     return await new Promise((resolve) => {
-      const corePath = join('cores', core)
       // spawn takes the executable separately from its arguments; no shell quoting is needed.
       const child = spawn(executable, ['-L', corePath, gamePath, '-f', '--appendconfig', config], {
         cwd: retroarchDir,
@@ -405,19 +430,19 @@ function createWindow() {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   if (app.isPackaged) {
-    try {
-      await seedBundledRetroArch({ resourcesPath: process.resourcesPath, retroarchDir })
-    } catch (error) {
-      await dialog.showMessageBox({
-        type: 'error',
-        message: 'RetroArch initialization failed',
-        detail: error.message
+    // Initialization must never prevent the library window from opening.
+    // Only a launch request waits for copying; failures remain visible in the log.
+    retroarchPreparation = seedBundledRetroArch({
+      resourcesPath: process.resourcesPath,
+      retroarchDir
+    })
+      .then(() => null)
+      .catch((error) => {
+        console.warn('[RetroArch setup] Preparation incomplete:', error)
+        return error
       })
-      app.quit()
-      return
-    }
   }
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
@@ -501,6 +526,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('list-cores', () => coreCatalog.list())
   ipcMain.handle('select-core', async (_event, { gameId, platform, core } = {}) => {
     try {
+      const preparationError = await retroarchPreparation
+      if (preparationError) throw preparationError
       if (launchInProgress) throw Error('Stop the running game first.')
       const game = gameId ? guideGame(gameId) : null
       if (
@@ -517,13 +544,27 @@ app.whenReady().then(async () => {
       return { success: false, error: error.message }
     }
   })
-  ipcMain.handle('install-core', (_event, system) => cores.install(system))
+  ipcMain.handle('install-core', async (_event, system) => {
+    try {
+      const preparationError = await retroarchPreparation
+      if (preparationError) throw preparationError
+      return await cores.install(system)
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  })
   ipcMain.handle('get-system-status', () =>
-    [...new Set(getLocalGames().map((game) => game.systemShort))].map((platform) => ({
-      platform,
-      core: coreCatalog.get(null, platform) || cores.find(platform),
-      bios: biosStatus(retroarchDir, platform)
-    }))
+    [...new Set(getLocalGames().map((game) => game.systemShort))].map((platform) => {
+      const core = coreCatalog.get(null, platform) || cores.find(platform)
+      const corePath = cores.pathFor(core)
+      return {
+        platform,
+        core: corePath ? core : null,
+        corePath,
+        coreDirectory: join(retroarchDir, 'cores'),
+        bios: biosStatus(retroarchDir, platform)
+      }
+    })
   )
   ipcMain.handle('show-session-menu', () => {
     openSessionMenu()

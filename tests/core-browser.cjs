@@ -86,7 +86,10 @@ async function run(win) {
   await pad(0)
   for (let n = 0; n < 100 && !child; n++) await delay(25)
   assert(child, 'Selected core installs and launches')
-  assert.equal(args[args.indexOf('-L') + 1], path.join('cores', 'stella_libretro.dll'))
+  assert.equal(
+    args[args.indexOf('-L') + 1],
+    path.join(root, 'emulators', 'retroarch', 'cores', 'stella_libretro.dll')
+  )
   assert(fs.existsSync(path.join(root, 'emulators', 'retroarch', 'cores', 'stella_libretro.dll')))
   const games = await evalJS('window.electronAPI.getLocalGames()')
   const selected = JSON.parse(fs.readFileSync(path.join(root, 'profile', 'core-selections.json')))

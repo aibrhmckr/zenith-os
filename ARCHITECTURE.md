@@ -1,6 +1,6 @@
 # Zenith OS — Teknik mimari ve katkı rehberi
 
-Bu belge 28 Eylül 2026 tarihindeki kaynak ağacını açıklar. Tasarlanan gelecekteki
+Bu belge 30 Eylül 2026 tarihindeki kaynak ağacını açıklar. Tasarlanan gelecekteki
 modüller ile çalışan kod birbirinden ayrılmıştır. Zenith bir Electron masaüstü
 başlatıcısıdır; bağımsız bir çekirdek/işletim sistemi değildir. ROM, BIOS,
 RetroArch kurulumu ve indirilen oyun medyası Git kaynak kod dağıtımının parçası değildir.
@@ -114,7 +114,7 @@ zenith/
 | `src/main/services/local-media.js`   | `mediaUrl`, `serveMedia`, `revokeMediaDirectory`: SHA-256 anahtarlı runtime URL tablosu; GET/HEAD, byte range/suffix range, MIME ve 416/404 davranışı. Akışla servis eder; tüm videoyu belleğe almaz.                                                                                                                                                                                                                                                                               |
 | `src/main/services/guideService.js`  | Wikipedia REST lore ve Archive.org videogamemanuals/BookReader metadata/sayfaları. `getLore`, `getManual`, `getPage`, `getFeatures`, `setFeatures`, `whenIdle`. 10 sn, JSON 2 MiB/sayfa JPEG 8 MiB, en fazla 512 sayfa; local lore/manual cache ve eşzamanlı istek tekilleştirme.                                                                                                                                                                                                   |
 | `src/main/services/biosStatus.js`    | `BIOS_RULES`, `biosDirectory`, `biosStatus`, `deleteBios`. PS2, PS1, Dreamcast ad/boyut denetimi; yalnızca ilgili BIOS adaylarını kaldırır, system dizininin tamamını silmez. Süreç/ağ yok.                                                                                                                                                                                                                                                                                         |
-| `src/main/services/coreManager.js`   | `CORE_FILES`, `coreFilesFor`, `buildbotBase`, `extractCore`, `createCoreManager`. `find`, `install`, `installNamed`; resmi x64 Buildbot ZIP'i, CRC ve Windows PE/Linux ELF64 kontrolü; 120 sn/200 MiB sınır, mevcut dosyaya overwrite yok. Aynı dosya listesi kurulumları tekilleşir.                                                                                                                                                                                               |
+| `src/main/services/coreManager.js`   | `CORE_FILES`, `coreFilesFor`, `buildbotBase`, `extractCore`, `createCoreManager`. `find`, `pathFor`, `install`, `installNamed`; resmi x64 Buildbot ZIP'i, CRC ve Windows PE/Linux ELF64 kontrolü; 120 sn/200 MiB sınır. `installedCorePath` fiziksel, okunabilir ve doğru host başlığına sahip dosyayı doğrular; geçerli dosya yeniden indirilmez, bozuk/boş dosya atomik olarak yenilenir. Aynı dosya listesi kurulumları tekilleşir.                                                                                                                                                                                               |
 | `src/main/services/coreCatalog.js`   | `createCoreCatalog`, `biosPlatformForCore`: hosta uygun tüm Buildbot core dosyalarını listeler, kurulu core'ları birleştirir, alfabetik ad/arama alias'ları üretir. 10 sn/2 MiB, 1 saat RAM cache, userData disk fallback. `list`, `allowed`, `get`, `select`, `forget`; oyun veya platform bazında çekirdek tercihi. BIOS isteyen bilinen core ailesini seçilen dosya adından da tanır.                                                                                            |
 | `src/main/services/sessionBridge.js` | `startSessionBridge`: Windows PowerShell veya Linux Python child process. Sayısal PID ve doğrulanmış hotkey JSON'unu stdin'den geçirir; stdout `home` satırını callback'e dönüştürür. `update`, `resume`, `stop`; parçalı stdout satırlarını tamponlar, stderr loglar. Linux script yolunu `app.asar.unpacked` fiziksel yoluna dönüştürür.                                                                                                                                          |
 
@@ -229,7 +229,7 @@ Her invoke bir Promise döndürür; tabloda Promise'ın çözümlenen değeri ya
 | `install-core`          | `installCore(platform)`                                       | Result + `core`                                              | Varsayılan core/fallback kurulumu. Unsupported platform Result.error; browser kullanılabilir.                                                                               |
 | `list-cores`            | `listCores()`                                                 | `{success,cores:[{fileName,name,installed}],offline,error?}` | Resmi host kataloğu + local kurulum, alfabetik; ağ kesilince cache/local sonuç.                                                                                             |
 | `select-core`           | `selectCore({gameId?,platform?,core})`                        | Result + `core`                                              | Gerçek oyun ID veya bilinen platform; Unassigned için oyun ID şart. Katalogda/yerelde olmayan ad reddedilir. Kurulumdan sonra tercih saklanır; IPC doğrudan oyun başlatmaz. |
-| `get-system-status`     | `getSystemStatus()`                                           | `[{platform,core,bios}]`                                     | Kütüphanedeki platformlar, platform tercihi veya default kurulu core, BIOS durumu. Oyun bazlı override her sistem satırında gösterilmez.                                    |
+| `get-system-status`     | `getSystemStatus()`                                           | `[{platform,core,corePath,coreDirectory,bios}]`                                     | Kütüphanedeki platformlar, platform tercihi veya default kurulu core, BIOS durumu. Oyun bazlı override her sistem satırında gösterilmez.                                    |
 | `upload-bios`           | `uploadBios(platform)`                                        | Result + `fileName,status`                                   | Native bin/rom seçimi, doğru hedefe exclusive copy; aynı adlı dosya üzerine yazılmaz, canceled desteklenir.                                                                 |
 | `delete-bios`           | `deleteBios(platform)`                                        | Result + `status`                                            | Aktif oyun varsa engel; yalnız bu platformun aday BIOS dosyaları.                                                                                                           |
 | `open-bios-folder`      | `openBiosFolder(platform)`                                    | Result                                                       | mkdir + shell.openPath; shell hata metni Result.error.                                                                                                                      |
@@ -391,12 +391,38 @@ launchGame
     hazır → spawn
 ```
 
+Çekirdek indirme ve başlatma, `runtimePaths().retroarchDir/cores` altındaki aynı mutlak yolu kullanır. Paketli sürümde bu yol `userData/emulators/retroarch/cores` olur; resources dizinine yazılmaz. Kurulum, runtime hazırlığının bitmesini bekler. ZIP içinden yalnız beklenen DLL/SO çıkarılır, benzersiz `.part` dosyasına yazılır ve rename ile yayımlanır. Hedef dosya tekrar okunarak indirilen byte'larla karşılaştırılmadan başarı dönmez. Ağ/izin/çıkarma/doğrulama hataları işlem aşaması, kaynak URL ve hedef yoluyla `Result.error` olarak renderer'a iletilir. Sistem durumu fiziksel dosyadan hesaplanır, panel açıkken iki saniyede bir ve pencere odaklandığında yenilenir. `-L` öncesinde aynı dosya yeniden kontrol edilir. Başlık doğrulaması çekirdeğin bütün bağımlılıklarının veya ROM uyumluluğunun garantisi değildir.
+
+`node --test tests/core-verification.test.mjs` ağ/izin/bozuk dosya/doğrulama regresyonlarını; `npm run test:core-download` Windows paketli modunda gerçek Main/IPC/renderer, sahte ZIP/ağ/emülatör ile N64 indirme, hata bildirimi, dosya silinince Missing ve mutlak `-L` eşleşmesini sınar.
+
 Settings'ten Gözat platform tercihi kaydeder; oyun modalından seçim sadece o oyuna
 uygulanır. Unassigned platformunun tamamına tek core atanmaz. Katalogdaki bütün
 çekirdekler her ROM'la uyumlu değildir; liste uyumluluk garantisi değildir.
 Kurulu yerel core'lar da listelenir; yeni indirmeler yalnız resmi Buildbot'tandır.
 Yerel dosyayı içe alan ayrı native DLL picker yoktur; kullanıcı cores/ içine
 koyduğu uygun host çekirdeğini Gözat listesinden seçebilir.
+
+Yeni çekirdekler Node.js Buffer → benzersiz geçici dosya → atomik rename yoluyla
+kurulur. Windows'ta yalnız doğrulanmış yeni indirmenin geçici dosyasına ait
+`:Zone.Identifier` akışı rename öncesi silinir; ENOENT normaldir, diğer hatalar
+`Windows metadata cleanup` aşamasıyla renderer'a döner. Linux bu akışa dokunmaz;
+mevcut manuel binary'lere toplu unblock uygulanmaz. Paketler core içermediği için
+bu kontrol electron-builder aşamasında değil uygulamanın core installer'ında çalışır.
+
+`launchGame` her oyunun `session.cfg` dosyasına `video_vsync = "true"`,
+`video_refresh_rate = "60.0"`, `audio_sync = "true"`, `audio_rate_control = "true"`,
+`fastforward_ratio = "1.0"`, `video_max_swapchain_images = "3"` ve
+`vrr_runloop_enable = "true"` yazar. `resolve(runtime, 'session.cfg')` ile üretilen
+mutlak yol mevcut `--appendconfig` argümanıyla RetroArch'a iletilir; dosya spawn
+öncesinde yazılır. Gerçek oyun hızı donanım/çekirdek üzerinde ayrıca ölçülmelidir.
+Oturumda `notification_show_osd`, `notification_show_autoconfig`, `video_osd_widgets`,
+`notification_show_core_load` ve klasik OSD için `video_font_enable` false olur.
+Windows'ta `audio_driver = "xaudio"` seçilir; Linux'un native sürücüsü korunur.
+`audio_enable = "true"`, `audio_mute_enable = "false"`, `audio_volume = "0.0"`
+ses çıkışını açık, susturulmamış ve 0 dB seviyesinde yapılandırır.
+`tests/launcher.cjs` bu ayarların tüm konsol başlatmalarında bulunmasını;
+`tests/core-verification.test.mjs` Windows named stream temizliğini ve izin hatasını;
+`tests/platform.test.mjs` Linux'ta Windows metadata işlemi yapılmamasını doğrular.
 
 BIOS kuralları: PS2 system/pcsx2/bios/*.bin (4 veya 8 MiB), PS1 system/ altında
 scph5500/5501/5502/1001.bin (512 KiB; oyun bölgesi biliniyorsa ilgili bölge),
@@ -476,7 +502,7 @@ ve `test:core-browser` olarak package.json'dadır. Electron test script'leri bui
 gerektirir. Kaynak eklenince bu envanteri, IPC eklenince sözlük ve preload'u birlikte güncelleyin.
 
 ```sh
-npm run build:win     # NSIS installer + portable exe, x64
+npm run build:win     # Klasik NSIS installer, x64
 npm run build:linux   # AppImage + deb, x64; Linux host/CI üzerinde
 npm run build:unpack  # Yerel host için paket klasörü
 npm run start        # Derlenmiş Electron uygulamasını preview
@@ -528,20 +554,24 @@ Kaynaklar: [Git ignore davranışı](https://git-scm.com/docs/gitignore),
 
 ## 7. Hibrit RetroArch dağıtımı
 
-| Dosya                                                            | Sorumluluk                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| scripts/setup-emulators.mjs                                      | setup:emulators: Windows/Linux x64 algılama; Windows için resmi stable dizininde sayısal sürüm sıralaması, 15 saniye index timeout, 10 dakika/1 GiB akış indirmesi, 7zip-bin ile arşiv yol/link doğrulaması ve çıkarma. Geçici staging finally temizlenir. Mevcut executable varsa kurulum değiştirilmez. Linux'ta iskelet ve native kurulum yönergesi; otomatik Linux indirmesi yok. |
-| scripts/validate-emulators.cjs                                   | electron-builder beforePack: hedef OS'nin retroarch.exe (MZ) veya retroarch (ELF) dosyası yok/yanlışsa üretim paketlemesini durdurur. Bir lisans veya tam binary bütünlük doğrulaması değildir.                                                                                                                                                                                       |
-| src/main/services/bundledRuntime.js                              | seedBundledRetroArch: paketli uygulamada resources/emulators/retroarch dizinini ilk açılışta userData/emulators/retroarch dizinine asenkron kopyalar. Var olan kullanıcı dosyalarını korur, executable en son yayınlanır. Linux çalıştırma izni atanır. Hata Main tarafından gösterilir ve uygulama kapanır.                                                                          |
-| emulators/retroarch/.gitkeep, emulators/retroarch/cores/.gitkeep | Git'e girebilen yalnız boş iskelet dosyaları; guard içerik eklenmiş placeholder'ı reddeder.                                                                                                                                                                                                                                                                                           |
-| tests/emulator-bootstrap.test.mjs                                | Gerçek küçük 7z fixture ile indirme/çıkarma; semver seçimi; traversal/link reddi; boyut/hata temizliği; mevcut kurulumun korunması; Linux ayrımı; paket önkontrolü ve userData seeding.                                                                                                                                                                                               |
+| Dosya                                                            | Sorumluluk                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| scripts/setup-emulators.mjs                                      | setup:emulators: Windows/Linux x64 algılama; Windows için resmi stable dizininde sayısal sürüm sıralaması, 15 saniye index timeout, 10 dakika/1 GiB akış indirmesi, 7zip-bin ile arşiv yol/link doğrulaması ve çıkarma. Geçici staging finally temizlenir. Mevcut executable varsa kurulum değiştirilmez. Linux'ta iskelet ve native kurulum yönergesi; otomatik Linux indirmesi yok.           |
+| scripts/validate-emulators.cjs                                   | electron-builder beforePack: hedef OS'nin retroarch.exe (MZ) veya retroarch (ELF) dosyası yok/yanlışsa üretim paketlemesini durdurur. Bir lisans veya tam binary bütünlük doğrulaması değildir.                                                                                                                                                                                                 |
+| src/main/services/bundledRuntime.js                              | seedBundledRetroArch: paketli uygulamada resources/emulators/retroarch dizinini ilk açılışta userData/emulators/retroarch dizinine asenkron kopyalar. Var olan kullanıcı dosyalarını korur, executable en son yayınlanır. Linux çalıştırma izni atanır. EBUSY/EPERM/EACCES alan autoconfig/CFG dosyaları loglanıp atlanır. Kritik hatalar uygulamayı kapatmaz; yalnız oyun başlatmayı engeller. |
+| emulators/retroarch/.gitkeep, emulators/retroarch/cores/.gitkeep | Git'e girebilen yalnız boş iskelet dosyaları; guard içerik eklenmiş placeholder'ı reddeder.                                                                                                                                                                                                                                                                                                     |
+| tests/emulator-bootstrap.test.mjs                                | Gerçek küçük 7z fixture ile indirme/çıkarma; semver seçimi; traversal/link reddi; boyut/hata temizliği; mevcut kurulumun korunması; Linux ayrımı; paket önkontrolü ve userData seeding.                                                                                                                                                                                                         |
 
 Akış: npm ci → npm run setup:emulators → geliştirmede proje RetroArch dizini →
 build:win/build:linux (beforePack) → extraResources → son kullanıcı resources dizini →
 ilk açılışta userData'ya seed → mevcut launch-game/core/BIOS servisleri.
 IPC değişmez. npm run build yalnız Vite derlemesidir; installer oluşturmaz.
-Paketli uygulamada seeding pencere oluşturulmadan önce beklenir; ilk açılış kopya
-boyutuna göre uzayabilir. Sonraki açılışlar kopyalamaz. Uygulama güncellemesi
+Paketli uygulamada pencere kopyalamayı beklemeden açılır; yalnız launch-game IPC
+isteği hazırlama Promise'ini bekler. Hazırlama başarısız olursa pencere açık kalır;
+kritik hata yalnız oyun başlatma isteğinde gösterilir. Sonraki açılışlarda eksik
+dosyalar tekrar denenir; sağlam mevcut dosyalar boyut/tarih kontrolüyle korunur.
+Dosyalar COPYFILE_EXCL | COPYFILE_FICLONE ile benzersiz geçici hedefe kopyalanıp
+rename ile yayımlanır; yarım hedef dosya bırakılmaz. Uygulama güncellemesi
 kullanıcının RetroArch sürümünü otomatik yükseltmez. Eski paketlerin executable
 yanındaki RetroArch kurulumu otomatik taşınmaz; gerekirse kullanıcı profilinin
 emulators/retroarch dizinine elle taşınır. Oyun kütüphanesi yolu değişmez.
@@ -549,3 +579,39 @@ emulators/retroarch dizinine elle taşınır. Oyun kütüphanesi yolu değişmez
 Resmi kaynak: [Libretro kararlı dağıtımlar](https://buildbot.libretro.com/stable/).
 7zip-bin yalnız geliştirme bağımlılığıdır; bootstrap otomatik postinstall değildir.
 Temiz bir klondan installer üretmeden önce hedef OS RetroArch kurulumu hazırlanmalıdır.
+
+Başlangıç dayanıklılığı regresyonları: `tests/bundled-runtime.test.mjs`, kilitli CFG
+dosyaları, artımlı kopyalama, sıfır bayt onarımı ve kritik DLL hatalarını sınar.
+`tests/runtime-startup.cjs` gerçek Electron packaged-mode pencere/IPC akışında
+kopyalama beklerken pencerenin açılmasını ve hatalarda açık kalmasını doğrular.
+`npm run test:runtime-startup` normal Vite derlemesi sonrası iki senaryoyu çalıştırır.
+
+## Windows NSIS kurulum sihirbazı
+
+Varsayılan Windows hedefi NSIS'tir: oneClick=false, perMachine=false,
+allowToChangeInstallationDirectory=true. Masaüstü/Başlat menüsü kısayolları ve
+bitişte çalıştır seçeneği açıktır; differentialPackage=false. Artifact:
+dist/zenith-1.0.0-setup.exe (sürüm package.json'dan gelir).
+
+npm run build:win kaynakları derler ve NSIS paketini oluşturur.
+Yalnız paketlemek için npx electron-builder --win nsis --x64 kullanılabilir.
+Portable gerektiğinde ayrıca npx electron-builder --win portable --x64 çalıştırılır.
+forceCodeSigning=false ve signAndEditExecutable=false geliştirme paketlemesinde
+sertifika gerektirmez; bunlar Windows güvenlik ilkesini değiştirmez.
+
+scripts/nsis-process.cjs, mevcut beforePack doğrulamasından Windows'ta etkinleşir.
+electron-builder 26.15.3 WineVmManager.exec çağrısında yalnız boş argümanlı,
+RunAsInvoker ortamlı geçici EXE işlemini normalleştirir: mutlak dosya yolu,
+korunan Windows ortamı (SystemRoot, PATH, TEMP), gizli yardımcı pencere.
+UNKNOWN/EBUSY/EPERM/EACCES spawn hatalarını 250/750/1500/3000 ms aralıklarla
+sınırlı tekrarlar; normal hata çıkış kodlarını tekrar etmez ve kalıcı hatayı
+build'e geri iletir. node_modules dosyaları, NSIS cache ACL'leri ve Windows
+koruma ayarları değiştirilmez. USE_SYSTEM_MAKENSIS zorlanmaz; builder'ın
+kendi NSIS/compiler/plugin seti korunur.
+
+WineVm adı Windows'ta Wine kurulduğu anlamına gelmez; bu dal doğrudan Windows
+EXE'sini çalıştırır. Uninstaller üretimi, makensis çağrısından sonra geçici
+kurucunun çalıştırılmasını da içerir. Yardımcı adaptör bu ayrımı hedefler;
+electron-builder sürüm yükseltmelerinde tests/nsis-process.test.mjs ve gerçek
+NSIS build birlikte doğrulanmalıdır. Test, ortam koruma, sınırlı tekrar ve
+sihirbaz yapılandırmasını kapsar. Kalıcı işletim sistemi engelleri bypass edilmez.

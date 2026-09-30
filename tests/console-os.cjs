@@ -373,9 +373,12 @@ async function run(window) {
   assert(Date.now() - before >= 450)
   assert.equal(spawns.length, 0)
   await pad(-1, 'down')
+  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Cancel')
+  await pad(-1, 'down')
   assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Browse cores')
   await pad(-1, 'up')
-  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Download core')
+  await pad(-1, 'up')
+  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Download')
   await pad(0)
   await wait(
     "document.querySelector('[data-launch-game]').disabled && !document.querySelector('dialog')"

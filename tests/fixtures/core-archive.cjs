@@ -1,21 +1,23 @@
 // Synthetic PE header inside a ZIP, not executable emulator code.
 const { deflateRawSync } = require('node:zlib')
-function coreArchive(name, payload) {
-  const dll = payload || Buffer.alloc(256)
-  if (!payload) {
-    if (name.endsWith('.so')) {
-      dll.writeUInt32BE(0x7f454c46)
-      dll[4] = 2
-      dll[5] = 1
-      dll.writeUInt16LE(3, 16)
-      dll.writeUInt16LE(62, 18)
-    } else {
-      dll.write('MZ')
-      dll.writeUInt32LE(64, 60)
-      dll.writeUInt32LE(0x4550, 64)
-      dll.writeUInt16LE(0x8664, 68)
-    }
+function coreBinary(name) {
+  const dll = Buffer.alloc(256)
+  if (name.endsWith('.so')) {
+    dll.writeUInt32BE(0x7f454c46)
+    dll[4] = 2
+    dll[5] = 1
+    dll.writeUInt16LE(3, 16)
+    dll.writeUInt16LE(62, 18)
+  } else {
+    dll.write('MZ')
+    dll.writeUInt32LE(64, 60)
+    dll.writeUInt32LE(0x4550, 64)
+    dll.writeUInt16LE(0x8664, 68)
   }
+  return dll
+}
+function coreArchive(name, payload) {
+  const dll = payload || coreBinary(name)
   let crc = 0xffffffff
   for (const byte of dll) {
     crc ^= byte
@@ -46,4 +48,4 @@ function coreArchive(name, payload) {
   end.writeUInt32LE(local.length + filename.length + data.length, 16)
   return Buffer.concat([local, filename, data, central, filename, end])
 }
-module.exports = { coreArchive }
+module.exports = { coreArchive, coreBinary }

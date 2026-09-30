@@ -38,6 +38,11 @@ test('Windows portable and Linux AppImage/deb paths use native executable names 
 })
 
 test('Linux downloads .so.zip from the Linux buildbot and rejects Windows/incorrect ELF cores', async (t) => {
+  const unlink = fs.promises.unlink
+  t.mock.method(fs.promises, 'unlink', async (file, ...args) => {
+    assert(!String(file).includes(':Zone.Identifier'), 'Linux must not access Windows metadata')
+    return unlink(file, ...args)
+  })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-linux-core-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   assert(coreFilesFor('linux').PS2.every((name) => name.endsWith('.so')))

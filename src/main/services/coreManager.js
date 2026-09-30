@@ -1,5 +1,6 @@
 import fs from 'node:fs'
-import { join } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { inflateRawSync } from 'node:zlib'
 
 export const CORE_FILES = {
@@ -33,6 +34,43 @@ export const buildbotBase = (platform) =>
   (platform === 'linux' ? 'linux' : 'windows') +
   '/x86_64/latest/'
 const MAX = 200 * 1024 * 1024
+// One physical-file check for the installer, catalog, status IPC and launcher.
+export function installedCorePath(retroarchDir, name, platform = process.platform) {
+  if (
+    typeof name !== 'string' ||
+    !/^[a-z0-9_-]+_libretro\.(dll|so)$/i.test(name) ||
+    !name.endsWith(platform === 'linux' ? '.so' : '.dll')
+  )
+    return null
+  const destination = resolve(retroarchDir, 'cores', name)
+  let fd
+  try {
+    if (!fs.existsSync(destination)) return null
+    fd = fs.openSync(destination, 'r')
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.size < 128 || stat.size > MAX) return null
+    const header = Buffer.alloc(64)
+    if (fs.readSync(fd, header, 0, 64, 0) !== 64) return null
+    if (platform === 'linux') {
+      return header.readUInt32BE(0) === 0x7f454c46 &&
+        header[4] === 2 &&
+        header[5] === 1 &&
+        header.readUInt16LE(16) === 3 &&
+        header.readUInt16LE(18) === 62
+        ? destination
+        : null
+    }
+    if (header.toString('ascii', 0, 2) !== 'MZ') return null
+    const offset = header.readUInt32LE(60),
+      pe = Buffer.alloc(6)
+    if (offset + 6 > stat.size || fs.readSync(fd, pe, 0, 6, offset) !== 6) return null
+    return pe.readUInt32LE(0) === 0x4550 && pe.readUInt16LE(4) === 0x8664 ? destination : null
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+}
 export function extractCore(
   zip,
   expected,
@@ -107,30 +145,29 @@ export function createCoreManager({
 }) {
   const coreFiles = coreFilesFor(platform)
   const pending = new Map()
-  const find = (system) =>
-    coreFiles[system]?.find((name) =>
-      fs.statSync(join(retroarchDir, 'cores', name), { throwIfNoEntry: false })?.isFile()
-    ) || null
+  const pathFor = (name) => installedCorePath(retroarchDir, name, platform)
+  const find = (system) => coreFiles[system]?.find((name) => pathFor(name)) || null
   const installFiles = (files) => {
     const key = files.join(',')
     if (pending.has(key)) return pending.get(key)
     const task = (async () => {
       if (!['win32', 'linux'].includes(platform) || arch !== 'x64')
         return { success: false, error: 'Windows or Linux x64 is required for these cores.' }
-      const existing = files.find((name) =>
-        fs.statSync(join(retroarchDir, 'cores', name), { throwIfNoEntry: false })?.isFile()
-      )
+      const existing = files.find((name) => pathFor(name))
       if (existing) return { success: true, core: existing }
       let failure = 'Core is unavailable from the Libretro build server.'
       for (const name of files) {
+        const destination = resolve(retroarchDir, 'cores', name)
+        const url = `${buildbotBase(platform)}${name}.zip`
+        let stage = 'download'
         try {
-          const response = await fetchImpl(`${buildbotBase(platform)}${name}.zip`, {
+          const response = await fetchImpl(url, {
             signal: AbortSignal.timeout(120000),
             redirect: 'error'
           })
-          if (response.status === 404) {
+          if (!response.ok) {
             await response.body?.cancel()
-            continue
+            throw Error(`HTTP ${response.status}`)
           }
           if (
             !response.ok ||
@@ -145,25 +182,39 @@ export function createCoreManager({
             if (bytes > MAX) throw Error('Core download exceeds 200 MB.')
             chunks.push(Buffer.from(chunk))
           }
+          stage = 'extract'
           const dll = extractCore(Buffer.concat(chunks), name, platform)
-          const directory = join(retroarchDir, 'cores'),
-            destination = join(directory, name)
-          await fs.promises.mkdir(directory, { recursive: true })
-          let ownsTemporary = false
+          stage = 'write'
+          await fs.promises.mkdir(dirname(destination), { recursive: true })
+          const temporary = `${destination}.${randomUUID()}.part`
           try {
-            await fs.promises.writeFile(`${destination}.part`, dll, { flag: 'wx' })
-            ownsTemporary = true
-            await fs.promises.copyFile(
-              `${destination}.part`,
-              destination,
-              fs.constants.COPYFILE_EXCL
-            )
+            // Fresh native Buffer writes do not propagate ZIP/browser attachment metadata.
+            await fs.promises.writeFile(temporary, dll, { flag: 'wx' })
+            if (platform === 'win32') {
+              // Only this validated Buildbot download, never arbitrary existing local binaries.
+              // Remove the named NTFS stream before publishing; no shell or system-policy edits.
+              stage = 'Windows metadata cleanup'
+              try {
+                await fs.promises.unlink(`${temporary}:Zone.Identifier`)
+              } catch (error) {
+                if (error.code !== 'ENOENT') throw error
+              }
+            }
+            stage = 'write'
+            // Publish only a complete core, replacing broken/zero-byte previous installs.
+            await fs.promises.rename(temporary, destination)
+            stage = 'verify'
+            const written = await fs.promises.readFile(destination)
+            if (!written.equals(dll) || !pathFor(name)) {
+              await fs.promises.rm(destination, { force: true })
+              throw Error('Installed core is missing, unreadable or differs from the download.')
+            }
           } finally {
-            if (ownsTemporary) await fs.promises.rm(`${destination}.part`, { force: true })
+            await fs.promises.rm(temporary, { force: true })
           }
           return { success: true, core: name }
         } catch (error) {
-          failure = error.message
+          failure = `Core ${stage} failed (${error.code || error.message}). Source: ${url}. Target: ${destination}`
         }
       }
       return { success: false, error: failure }
@@ -182,5 +233,5 @@ export function createCoreManager({
     name.endsWith(platform === 'linux' ? '.so' : '.dll')
       ? installFiles([name])
       : Promise.resolve({ success: false, error: 'Invalid core filename.' })
-  return { find, install, installNamed }
+  return { find, pathFor, install, installNamed }
 }

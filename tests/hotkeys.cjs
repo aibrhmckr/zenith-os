@@ -1,3 +1,4 @@
+const { coreBinary } = require('./fixtures/core-archive.cjs')
 const { app, BrowserWindow, globalShortcut } = require('electron')
 const fs = require('node:fs'),
   path = require('node:path'),
@@ -12,7 +13,7 @@ fs.mkdirSync(path.join(root, 'games'), { recursive: true })
 fs.mkdirSync(path.join(retro, 'cores'), { recursive: true })
 fs.writeFileSync(path.join(root, 'games', 'Fixture.gba'), 'fixture')
 fs.writeFileSync(path.join(retro, 'retroarch.exe'), '')
-fs.writeFileSync(path.join(retro, 'cores', 'mgba_libretro.dll'), '')
+fs.writeFileSync(path.join(retro, 'cores', 'mgba_libretro.dll'), coreBinary('mgba_libretro.dll'))
 app.getAppPath = () => root
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { buildbotBase, CORE_FILES } from './coreManager.js'
+import { buildbotBase, CORE_FILES, installedCorePath } from './coreManager.js'
 
 const LABELS = {
   stella: 'Stella · Atari 2600',
@@ -45,7 +45,9 @@ export function createCoreCatalog({
     try {
       return fs
         .readdirSync(join(retroarchDir, 'cores'), { withFileTypes: true })
-        .filter((f) => f.isFile() && valid(f.name))
+        .filter(
+          (f) => f.isFile() && valid(f.name) && installedCorePath(retroarchDir, f.name, platform)
+        )
         .map((f) => f.name)
     } catch {
       return []
@@ -122,7 +124,7 @@ export function createCoreCatalog({
     valid(name) && (await list()).cores.some((core) => core.fileName === name)
   const get = (gameId, system) => {
     const name = selections['game:' + gameId] || selections['platform:' + system]
-    return valid(name) && installed().includes(name) ? name : null
+    return valid(name) && installedCorePath(retroarchDir, name, platform) ? name : null
   }
   const save = async () => {
     await fs.promises.mkdir(userData, { recursive: true })

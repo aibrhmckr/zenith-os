@@ -372,7 +372,7 @@ $ npm run build:linux
 
 ## Windows ve Linux / Steam Deck
 
-- Windows: npm run build:win → NSIS kurulum paketi ve portable EXE (x64).
+- Windows: npm run build:win → klasik NSIS kurulum sihirbazı (x64).
 - Linux: npm run build:linux → AppImage ve deb (x64); Linux çıktıları Linux CI/host üzerinde derlenmelidir.
 - Geliştirmede emulators/retroarch/retroarch.exe (Windows) veya emulators/retroarch/retroarch (Linux) kullanılır.
 - Linux oyun klasörü geliştirmede de userData/games/ olur. Paketlenmiş Linux'ta emülatör klasörleri app.getPath('userData') altındadır;
@@ -421,7 +421,7 @@ Geçmiş commit’ler ve asset lisansları yayın öncesi ayrıca gözden geçir
 npm ci
 npm run setup:emulators
 npm run dev
-# Windows x64 installer + portable:
+# Windows x64 kurulum sihirbazı:
 npm run build:win
 # Linux host, native Linux RetroArch prepared first:
 npm run build:linux
@@ -438,14 +438,83 @@ npm run build:linux
 - Git yalnız iki boş `.gitkeep` dosyasını içerir. `extraResources` yerel RetroArch'ı
   `resources/emulators/retroarch/` içine, ASAR dışında paketler. BIOS/system,
   kişisel config, kayıt, ROM, önbellek ve log dizinleri pakete alınmaz.
-  Programın DLL'leri, assets ve yereldeki cores dahil edilir; lisans dosyaları korunur.
+  RetroArch'ın çalışma DLL'leri ve assets dahil edilir; lisans dosyaları korunur.
+  `cores/**` paket dışında tutulur; çekirdekler kullanıcının onayıyla sonradan indirilir.
 - `beforePack` hedef işletim sisteminin çalıştırılabilir dosyasını doğrular;
   eksik/yanlış kurulumla son kullanıcı paketi oluşturmayı durdurur.
 - Windows ve Linux paketleri ilk açılışta RetroArch'ı
-  `app.getPath('userData')/emulators/retroarch/` altına bir kez kopyalar.
+  `app.getPath('userData')/emulators/retroarch/` altına arka planda hazırlar.
+  Sonraki açılışlarda yalnız eksik/boş dosyalar tamamlanır; mevcut ayarlar korunur.
+  Kilitli autoconfig/CFG dosyaları loglanıp atlanır ve sonraki açılışta yeniden denenir.
   Böylece cores/BIOS yazımı Program Files veya salt okunur AppImage'a yapılmaz.
   Mevcut kullanıcı kurulumu korunur; uygulama güncellemesi onu otomatik değiştirmez.
 - `npm run build` yalnız Main/Preload/Renderer derlemesidir; installer üretmez.
   Emülatör gömme işlemi `build:win`, `build:linux` ve `build:unpack` ile gerçekleşir.
 - Dağıtılan RetroArch ve seçilen core'ların lisans/kaynak sağlama yükümlülükleri
   release hazırlığının parçasıdır; `.gitignore` Git koruması ile paketleme aynı şey değildir.
+
+## Windows NSIS kurulum sihirbazı
+
+Varsayılan Windows hedefi NSIS'tir: oneClick=false, perMachine=false,
+allowToChangeInstallationDirectory=true. Masaüstü/Başlat menüsü kısayolları ve
+bitişte çalıştır seçeneği açıktır; differentialPackage=false. Artifact:
+dist/zenith-1.0.0-setup.exe (sürüm package.json'dan gelir).
+
+npm run build:win kaynakları derler ve NSIS paketini oluşturur.
+Yalnız paketlemek için npx electron-builder --win nsis --x64 kullanılabilir.
+Portable gerektiğinde ayrıca npx electron-builder --win portable --x64 çalıştırılır.
+forceCodeSigning=false ve signAndEditExecutable=false geliştirme paketlemesinde
+sertifika gerektirmez; bunlar Windows güvenlik ilkesini değiştirmez.
+
+scripts/nsis-process.cjs, mevcut beforePack doğrulamasından Windows'ta etkinleşir.
+electron-builder 26.15.3 WineVmManager.exec çağrısında yalnız boş argümanlı,
+RunAsInvoker ortamlı geçici EXE işlemini normalleştirir: mutlak dosya yolu,
+korunan Windows ortamı (SystemRoot, PATH, TEMP), gizli yardımcı pencere.
+UNKNOWN/EBUSY/EPERM/EACCES spawn hatalarını 250/750/1500/3000 ms aralıklarla
+sınırlı tekrarlar; normal hata çıkış kodlarını tekrar etmez ve kalıcı hatayı
+build'e geri iletir. node_modules dosyaları, NSIS cache ACL'leri ve Windows
+koruma ayarları değiştirilmez. USE_SYSTEM_MAKENSIS zorlanmaz; builder'ın
+kendi NSIS/compiler/plugin seti korunur.
+
+WineVm adı Windows'ta Wine kurulduğu anlamına gelmez; bu dal doğrudan Windows
+EXE'sini çalıştırır. Uninstaller üretimi, makensis çağrısından sonra geçici
+kurucunun çalıştırılmasını da içerir. Yardımcı adaptör bu ayrımı hedefler;
+electron-builder sürüm yükseltmelerinde tests/nsis-process.test.mjs ve gerçek
+NSIS build birlikte doğrulanmalıdır. Test, ortam koruma, sınırlı tekrar ve
+sihirbaz yapılandırmasını kapsar. Kalıcı işletim sistemi engelleri bypass edilmez.
+
+## RetroArch synchronization and downloaded core files
+
+Every launch supplies a per-game `userData/media/{gameId}/session.cfg` through
+`--appendconfig` using an absolute path. It sets `video_vsync = "true"`,
+`video_refresh_rate = "60.0"`, `audio_sync = "true"`, `audio_rate_control = "true"`,
+`fastforward_ratio = "1.0"`, `video_max_swapchain_images = "3"`, and
+`vrr_runloop_enable = "true"`. These session settings also apply to existing installations.
+The configured refresh-rate value is 60.0 Hz; actual game timing still needs validation
+with the core, audio driver and display in use. See the
+[upstream configuration](https://github.com/libretro/RetroArch/blob/master/retroarch.cfg).
+
+Session configuration also disables `notification_show_osd`, `notification_show_autoconfig`,
+`video_osd_widgets`, `notification_show_core_load`, and the classic text OSD via
+`video_font_enable`. On Windows it selects `audio_driver = "xaudio"`; Linux/Steam Deck
+keeps its native audio driver. Audio is enabled and unmuted at `audio_volume = "0.0"`
+(0 dB). These settings do not change the operating system's mixer or output device.
+
+Core downloads are extracted into native Node.js Buffers and written to new temporary
+files before atomic installation. On Windows, only that newly downloaded and validated
+core's `Zone.Identifier` stream is removed before publication. Missing streams are normal;
+other cleanup failures are reported through the download error UI. Existing manually
+installed cores are not unblocked. This follows the named-stream operation described by
+[Microsoft's Unblock-File documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/unblock-file).
+No PowerShell process or system security-policy change is needed. Cores remain excluded
+from electron-builder packages; this flow runs when the installed app downloads a core.
+
+## Legal Disclaimer
+
+Zenith OS is an open-source launcher and frontend interface designed for library management and emulator automation. Zenith OS does not contain, distribute, or promote any copyrighted ROMs, ISOs, game assets, or proprietary console BIOS dumps. Users are solely responsible for providing their own legally dumped games and BIOS files.
+
+## Third-Party Licenses & Attribution
+
+- **RetroArch & libretro:** This project utilizes the open-source RetroArch frontend under the GNU General Public License v3.0 (GPL-3.0). RetroArch and the libretro ecosystem are developed and maintained by the Libretro team and contributors; individual emulation cores also have their own upstream developers and licenses. Visit [RetroArch](https://www.retroarch.com) and [Libretro on GitHub](https://github.com/libretro) for source code and documentation.
+- Core binaries are not bundled with releases and are downloaded on-demand directly by the user.
+- See the [RetroArch GPL v3 license](https://github.com/libretro/RetroArch/blob/master/COPYING) and [Libretro license inventory](https://docs.libretro.com/development/licenses/) for upstream terms. Releases that include RetroArch must preserve its license notices and provide access to the corresponding source for the distributed version in accordance with GPL v3; these attribution links alone do not replace those obligations.

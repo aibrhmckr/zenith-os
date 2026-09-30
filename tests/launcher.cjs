@@ -1,3 +1,4 @@
+const { coreBinary } = require('./fixtures/core-archive.cjs')
 // Real Electron IPC/renderer; emulator process and native dialogs are test doubles.
 const { app, BrowserWindow, dialog } = require('electron')
 const { EventEmitter } = require('node:events')
@@ -123,16 +124,43 @@ async function checkLauncher(window) {
   assert.equal(spawns.length, 0)
 
   for (const [system, extension, core] of fixtures) {
-    fs.writeFileSync(path.join(coresDirectory, core), '')
+    fs.writeFileSync(path.join(coresDirectory, core), coreBinary(core))
     const rom = path.join(gamesDirectory, `Özel oyun & test.${extension}`)
     const call = await begin(rom, system)
     assert.equal(call.command, executable)
-    assert.deepEqual(call.args.slice(0, 4), ['-L', path.join('cores', core), rom, '-f'])
+    assert.deepEqual(call.args.slice(0, 4), ['-L', path.join(coresDirectory, core), rom, '-f'])
     assert.equal(call.options.cwd, retroarchDirectory)
     assert.equal(call.options.shell, false)
     assert.equal(call.options.detached, true)
     assert.equal(call.args[4], '--appendconfig')
-    assert.match(fs.readFileSync(call.args[5], 'utf8'), /pause_nonactive = true/)
+    assert(path.isAbsolute(call.args[5]), 'Append config must not depend on RetroArch cwd')
+    assert(fs.statSync(call.args[5]).isFile(), 'Session config must exist before spawn')
+    const sessionConfig = fs.readFileSync(call.args[5], 'utf8')
+    assert.match(sessionConfig, /pause_nonactive = true/)
+    for (const setting of [
+      'video_vsync = "true"',
+      'video_refresh_rate = "60.0"',
+      'audio_sync = "true"',
+      'audio_rate_control = "true"',
+      'fastforward_ratio = "1.0"',
+      'video_max_swapchain_images = "3"',
+      'vrr_runloop_enable = "true"',
+      'notification_show_osd = "false"',
+      'notification_show_autoconfig = "false"',
+      'video_osd_widgets = "false"',
+      'notification_show_core_load = "false"',
+      'video_font_enable = "false"',
+      'audio_driver = "xaudio"',
+      'audio_enable = "true"',
+      'audio_mute_enable = "false"',
+      'audio_volume = "0.0"'
+    ])
+      assert.equal(
+        sessionConfig.split('\n').filter((line) => line === setting).length,
+        1,
+        `${system}: ${setting}`
+      )
+    assert(!sessionConfig.includes('vrr_runloop_enable = "false"'))
     assert.deepEqual(call.options.stdio, ['ignore', 'pipe', 'pipe'])
     const beforeSpawn = windowActions.length
     call.child.emit('spawn')
@@ -164,16 +192,19 @@ async function checkLauncher(window) {
     path.join(coresDirectory, 'pcsx2_libretro.dll'),
     path.join(coresDirectory, 'pcsx2.disabled')
   )
-  fs.writeFileSync(path.join(coresDirectory, 'lrps2_libretro.dll'), '')
+  fs.writeFileSync(
+    path.join(coresDirectory, 'lrps2_libretro.dll'),
+    coreBinary('lrps2_libretro.dll')
+  )
   let call = await begin()
-  assert.equal(call.args[1], path.join('cores', 'lrps2_libretro.dll'))
+  assert.equal(call.args[1], path.join(coresDirectory, 'lrps2_libretro.dll'))
   await finish(call.child)
   fs.renameSync(
     path.join(coresDirectory, 'pcsx2.disabled'),
     path.join(coresDirectory, 'pcsx2_libretro.dll')
   )
   call = await begin()
-  assert.equal(call.args[1], path.join('cores', 'pcsx2_libretro.dll'))
+  assert.equal(call.args[1], path.join(coresDirectory, 'pcsx2_libretro.dll'))
   await finish(call.child)
 
   // ISO hints use PPSSPP through the real scanner and launch validation.
@@ -187,7 +218,7 @@ async function checkLauncher(window) {
     call = await begin(rom, 'PSP')
     assert.deepEqual(call.args.slice(0, 4), [
       '-L',
-      path.join('cores', 'ppsspp_libretro.dll'),
+      path.join(coresDirectory, 'ppsspp_libretro.dll'),
       rom,
       '-f'
     ])
@@ -200,16 +231,19 @@ async function checkLauncher(window) {
     path.join(coresDirectory, 'duckstation_libretro.dll'),
     path.join(coresDirectory, 'duckstation.disabled')
   )
-  fs.writeFileSync(path.join(coresDirectory, 'mednafen_psx_hw_libretro.dll'), '')
+  fs.writeFileSync(
+    path.join(coresDirectory, 'mednafen_psx_hw_libretro.dll'),
+    coreBinary('mednafen_psx_hw_libretro.dll')
+  )
   call = await begin(path.join(gamesDirectory, 'Özel oyun & test.cue'), 'PS1')
-  assert.equal(call.args[1], path.join('cores', 'mednafen_psx_hw_libretro.dll'))
+  assert.equal(call.args[1], path.join(coresDirectory, 'mednafen_psx_hw_libretro.dll'))
   await finish(call.child)
   fs.renameSync(
     path.join(coresDirectory, 'duckstation.disabled'),
     path.join(coresDirectory, 'duckstation_libretro.dll')
   )
   call = await begin(path.join(gamesDirectory, 'Özel oyun & test.cue'), 'PS1')
-  assert.equal(call.args[1], path.join('cores', 'duckstation_libretro.dll'))
+  assert.equal(call.args[1], path.join(coresDirectory, 'duckstation_libretro.dll'))
   await finish(call.child)
 
   // Spawn failures emit both error and close; report and restore only once.

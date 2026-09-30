@@ -1,3 +1,4 @@
+const { coreBinary } = require('./fixtures/core-archive.cjs')
 // Synthetic BIOS bytes only. Tests diagnosis, upload, native picker and modal recovery.
 const { app, BrowserWindow, dialog, shell } = require('electron')
 const { EventEmitter } = require('node:events')
@@ -13,7 +14,7 @@ const retroarch = path.join(root, 'emulators', 'retroarch'),
 fs.mkdirSync(games, { recursive: true })
 fs.mkdirSync(path.join(retroarch, 'cores'), { recursive: true })
 for (const file of ['retroarch.exe', 'cores/pcsx2_libretro.dll', 'cores/ppsspp_libretro.dll'])
-  fs.writeFileSync(path.join(retroarch, file), '')
+  fs.writeFileSync(path.join(retroarch, file), coreBinary(file))
 for (const file of ['PS2 Demo.iso', 'PSP Demo.iso']) fs.writeFileSync(path.join(games, file), '')
 app.getAppPath = () => root
 app.setPath('userData', path.join(root, 'profile'))

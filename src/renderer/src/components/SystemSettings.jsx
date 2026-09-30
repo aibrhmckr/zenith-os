@@ -16,31 +16,63 @@ export default function SystemSettings({
   const { t, language, setLanguage } = useI18n()
   const [systems, setSystems] = useState([]),
     [busy, setBusy] = useState(false),
+    [failed, setFailed] = useState(false),
     [message, setMessage] = useState('')
   const load = () => window.electronAPI.getSystemStatus().then(setSystems)
   useEffect(() => {
-    void load().catch(() => setMessage('System status unavailable.'))
+    let active = true
+    const refresh = async () => {
+      try {
+        const status = await window.electronAPI.getSystemStatus()
+        if (active) setSystems(status)
+      } catch {
+        if (active) {
+          setSystems([])
+          setFailed(true)
+          setMessage('System status unavailable.')
+        }
+      }
+    }
+    void refresh()
+    const timer = setInterval(refresh, 2000)
+    window.addEventListener('focus', refresh)
+    return () => {
+      active = false
+      clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+    }
   }, [])
   const run = async (action) => {
     if (busy) return
     setBusy(true)
+    setFailed(false)
     setMessage('')
     try {
       const result = await action()
       if (result.canceled) return
       if (!result.success) throw Error(result.error)
       setMessage(result.status && !result.status.ready ? t('biosNotReady') : t('saved'))
-      await load()
     } catch (error) {
+      setFailed(true)
       setMessage(error.message || t('error'))
     } finally {
+      try {
+        await load()
+      } catch {
+        setSystems([])
+        setFailed(true)
+        setMessage('System status unavailable.')
+      }
       setBusy(false)
     }
   }
   return (
     <>
       {message && (
-        <p role="status" className="mb-4 text-sky-200">
+        <p
+          role={failed ? 'alert' : 'status'}
+          className={`mb-4 break-words ${failed ? 'text-rose-300' : 'text-sky-200'}`}
+        >
           {message}
         </p>
       )}
@@ -100,7 +132,11 @@ export default function SystemSettings({
           <div className="space-y-3">
             {!systems.length && <p>{t('noSystems')}</p>}
             {systems.map((system) => (
-              <div key={system.platform} className="rounded-xl border border-white/10 p-4">
+              <div
+                key={system.platform}
+                data-core-platform={system.platform}
+                className="rounded-xl border border-white/10 p-4"
+              >
                 <div className="flex items-center justify-between gap-3">
                   <strong>{system.platform}</strong>
                   <span
@@ -118,9 +154,13 @@ export default function SystemSettings({
                       (system.bios.ready ? t('ready') : system.bios.missing.join(', '))
                     : ''}
                 </p>
+                <p className="mb-3 break-all text-xs text-white/50">
+                  {system.corePath || system.coreDirectory}
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {!system.core && (
                     <button
+                      data-install-core={system.platform}
                       disabled={busy}
                       className="console-button"
                       onClick={() => run(() => window.electronAPI.installCore(system.platform))}
@@ -161,6 +201,12 @@ export default function SystemSettings({
           </div>
         </>
       )}
+      <footer
+        data-legal-notice
+        className="mt-6 border-t border-white/10 pt-4 text-sm text-white/70"
+      >
+        Zenith OS does not bundle ROMs or BIOS files. RetroArch is licensed under GNU GPL v3.
+      </footer>
     </>
   )
 }

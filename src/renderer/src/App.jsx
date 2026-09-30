@@ -807,8 +807,8 @@ export default function App() {
               </p>
             )}
             {busy && (
-              <p role="status" className="mb-4 animate-pulse">
-                {t('working')}
+              <p role="status" aria-live="polite" className="mb-4 animate-pulse">
+                {panel.type === 'core' ? t('coreDownloading') : t('working')}
               </p>
             )}
             {panel.type === 'options' && (
@@ -899,20 +899,34 @@ export default function App() {
             )}
             {panel.type === 'core' && (
               <>
-                <p className="mb-6">
-                  {panel.platform} · {t('coreMissing')}
-                </p>
-                <button disabled={busy} onClick={install} className="console-button">
-                  {t('install')}
-                </button>
-                <button
-                  data-browse-cores
-                  disabled={busy}
-                  onClick={() => openPanel({ ...panel, type: 'coreBrowser' })}
-                  className="console-button ml-3"
-                >
-                  {t('browseCores')}
-                </button>
+                <p className="mb-6">{t('coreMissing').replace('{platform}', panel.platform)}</p>
+                <div className="flex flex-wrap gap-3" aria-busy={busy}>
+                  <button
+                    data-download-core
+                    data-initial-focus
+                    disabled={busy}
+                    onClick={install}
+                    className="console-button"
+                  >
+                    {t('download')}
+                  </button>
+                  <button
+                    data-cancel-core
+                    disabled={busy}
+                    onClick={closePanel}
+                    className="console-button"
+                  >
+                    {t('cancel')}
+                  </button>
+                  <button
+                    data-browse-cores
+                    disabled={busy}
+                    onClick={() => openPanel({ ...panel, type: 'coreBrowser' })}
+                    className="console-button"
+                  >
+                    {t('browseCores')}
+                  </button>
+                </div>
               </>
             )}
             {panel.type === 'bios' && (

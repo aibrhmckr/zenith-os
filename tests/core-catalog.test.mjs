@@ -5,13 +5,13 @@ import os from 'node:os'
 import { join } from 'node:path'
 import { createCoreCatalog, biosPlatformForCore } from '../src/main/services/coreCatalog.js'
 import { createCoreManager } from '../src/main/services/coreManager.js'
-import { coreArchive } from './fixtures/core-archive.cjs'
+import { coreArchive, coreBinary } from './fixtures/core-archive.cjs'
 test('official catalog filters foreign paths, sorts aliases, caches offline and persists selection', async (t) => {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'zenith-catalog-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const directory = join(root, 'cores')
   fs.mkdirSync(directory)
-  fs.writeFileSync(join(directory, 'local_libretro.dll'), 'fixture')
+  fs.writeFileSync(join(directory, 'local_libretro.dll'), coreBinary('local_libretro.dll'))
   const options = {
     retroarchDir: root,
     userData: join(root, 'profile'),

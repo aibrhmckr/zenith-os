@@ -19,6 +19,7 @@ extraResources:
       - '**/*'
       - '!**/*.log'
       - '!**/.gitkeep'
+      - '!cores/**'
       # A development installation can contain private BIOS and user data.
       - '!{system,saves,states,screenshots,thumbnails,records,recordings,config,cheats,downloads,playlists,logs,cache,media,games,roms}{,/**/*}'
       - '!**/*.{iso,ISO,bin,BIN,chd,CHD,rom,ROM,log,LOG,part,tmp,srm,state,lpl}'
@@ -26,17 +27,23 @@ extraResources:
       - '!retroarch-core-options.cfg'
       - '!session.cfg'
 win:
-  target:
-    - nsis
-    - portable
+  target: nsis
   executableName: zenith
+  forceCodeSigning: false
+  signAndEditExecutable: false
 portable:
   artifactName: ${name}-${version}-${arch}-portable.${ext}
 nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  differentialPackage: false
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
