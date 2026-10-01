@@ -1,343 +1,397 @@
 # Zenith OS
 
-Electron + React konsol arayüzü. Varsayılan dil İngilizce; Settings → Language ile Türkçe seçilebilir.
+A console-style launcher and game library built with Electron and React. English is
+the default language; select Turkish under **Settings → Language**.
 
-## Yerel oyun kütüphanesi
+## Local Game Library
 
-Uygulama açılırken proje kökündeki `games` klasörü oluşturulur ve doğrudan içindeki
-ROM dosyaları taranır. Windows paketinde bu klasör uygulamanın/portable EXE'nin yanındadır.
-Linux paketinde salt okunur AppImage veya /opt yerine userData/games kullanılır. Yeni dosyaları görmek için **Scan library** butonunu kullanın.
+On startup, Zenith creates the game directory if necessary and scans the ROM files
+directly inside it. On Windows, development builds use the project's `games/`
+directory, while packaged builds use `games/` beside the installed or portable
+executable. Linux uses `userData/games/`, including during development, to avoid
+writing to read-only AppImage mounts or `/opt`. Select **Scan library** to detect
+new files.
 
-Desteklenen konsollar: PS2, PS1, PSP, NDS, GBA, GBC, GameCube, Wii, N64, SNES, NES,
-3DS, Genesis ve Dreamcast. `.iso` dosyasının adında veya tam yolunda `PSP`
-(örneğin `(PSP)`) ya da `Vice City Stories` geçiyorsa PSP kabul edilir; diğer
-ISO dosyalarında varsayılan PS2'dir. Bu kontrol büyük/küçük harfe duyarlı değildir.
-Uzantılar büyük/küçük harfe duyarlı değildir; alt klasörler taranmaz.
+Supported platforms include PS2, PS1, PSP, NDS, GBA, GBC, GameCube, Wii, N64, SNES,
+NES, 3DS, Genesis, Dreamcast, Atari 2600, Atari 7800, and Atari Lynx. An `.iso` file
+is identified as PSP when its filename or full path contains `PSP` (for example,
+`(PSP)`) or `Vice City Stories`; other ISO files default to PS2. Platform hints and
+file extensions are matched without regard to case. Subdirectories are not scanned.
 
-Kapak için ROM ile aynı adı kullanın: `games/Oyun.iso` ve `games/Oyun.jpg` veya
-`games/Oyun.png`. İkisi de varsa JPG tercih edilir. Aynı resim arka planda da
-kullanılır; indirilen Libretro kapakları varsa öncelik kazanır. Hiç resim yoksa
-konsol adı gösterilir.
+For local artwork, use the same base name as the ROM: `games/Game.iso` with
+`games/Game.jpg` or `games/Game.png`. JPG takes precedence when both exist. The
+same image is also used as the backdrop; downloaded Libretro box art takes
+precedence when available. If no image is available, the card displays the
+platform name.
 
-## Otomatik medya taraması ve önizleme
+## Automatic Media Scraping and Previews
 
-Uygulama açılışında oyunlar hemen listelenir, ardından görseller arka planda
-[Libretro Thumbnail CDN](https://thumbnails.libretro.com/) üzerinden indirilir.
-Ücretli servis, hesap veya API anahtarı gerekmez. `Named_Boxarts`, `Named_Snaps`
-ve `Named_Titles` dizinleri konsol, temizlenmiş oyun adı ve bölgeye göre eşleştirilir.
-Örneğin `New Super Mario Bros. (USA).nds`, arayüzde `New Super Mario Bros.` olarak
-gösterilir; USA bilgisi eşleştirme için korunur.
+Games appear immediately on startup. Artwork is then downloaded in the background
+from the [Libretro Thumbnail CDN](https://thumbnails.libretro.com/). No paid service,
+account, or API key is required. The scraper matches `Named_Boxarts`, `Named_Snaps`,
+and `Named_Titles` entries by platform, cleaned game title, and region. For example,
+`New Super Mario Bros. (USA).nds` appears as `New Super Mario Bros.` in the library,
+while the USA region is retained for matching.
 
-Görseller `app.getPath('userData')/media/{gameId}/boxart.png`, `snap.png` ve
-`title.png` dosyalarında saklanır. `userData/games.json`, oyun kimliklerini,
-platform/bölge bilgisini ve yerel medya yollarını tutar. CDN yayın yılı,
-geliştirici veya tür bilgisi sağlamadığı için bu alanlar `null` bırakılır.
-`userData`, geliştirmede genellikle `%APPDATA%/zenith` klasörüdür.
+Images are cached as `boxart.png`, `snap.png`, and `title.png` under
+`app.getPath('userData')/media/{gameId}/`. The `userData/games.json` file stores game
+identifiers, platform and region information, and local media paths. The thumbnail
+CDN does not provide release year, developer, or genre metadata, so those fields
+remain `null`. During Windows development, `userData` is typically `%APPDATA%/zenith`.
 
-İki paralel indirme, istek zaman aşımı ve boyut sınırları uygulanır. İnternet
-kesildiğinde yerel kapaklar ve önbellek kullanılmaya devam eder. Bulunamayan
-eşleşmeler 24 saat sonra yeniden kontrol edilir; yenileme butonu hemen tekrar
-dener. İndirilmiş görseller tekrar indirilmez.
+Artwork downloads use two concurrent workers, request timeouts, and size limits.
+Local artwork and cached files remain available when the network is unavailable.
+Unmatched entries are retried after 24 hours; **Scan library** requests an immediate
+retry. Successfully downloaded images are not downloaded again.
 
-Ses ve video önizlemeleri [Archive.org açık JSON API](https://archive.org/developers/md-read.html)
-üzerinden otomatik aranır. Hesap, API anahtarı veya ek bağımlılık gerekmez.
-Müzik önce temiz oyun adıyla vgm_ost koleksiyonunda aranır. Bu koleksiyon boş
-sonuç döndürürse aynı oyun adına sahip herkese açık ses kayıtları kullanılır.
-Metadata dosya listesinde title/theme/menu parçası, ardından ilk uygun MP3
-tercih edilir. 15–60 saniyelik parçalar önceliklidir; dosyalar kesilmez.
+Audio and video previews are discovered automatically through the
+[Archive.org public JSON API](https://archive.org/developers/md-read.html). No account,
+API key, or additional dependency is required. Music searches first use the cleaned
+game title in the `vgm_ost` collection. If that collection returns no results, the
+scraper searches public audio items with the same game title. From an item's
+metadata file list, it prefers a title, theme, or menu track, followed by the first
+suitable MP3. Tracks lasting 15–60 seconds are preferred; files are not trimmed.
 
-Video için konsolun “Video Snaps” arşivleri aranır; MP4 dosyası oyun adı ve
-bölgesine göre eşleştirilir. Eşleşme yoksa aynı oyun adına sahip kısa preview,
-snap veya gameplay kaydı aranır. Süresi bilinen 60 saniyeden uzun videolar
-ve 5 MiB'tan büyük dosyalar indirilmez. Arşiv veya dosya bulunamazsa ilgili
-medya alanı null kalır.
+For video, the scraper searches the platform's Video Snaps archives and matches an
+MP4 by game title and region. If no match is found, it looks for a short preview,
+snap, or gameplay item with the same title. Videos with a known duration exceeding
+60 seconds and files larger than 5 MiB are excluded. If no archive or file matches,
+the corresponding media field remains `null`.
 
-MP3 ve MP4, görsel taramasından bağımsız bir kuyrukta indirilir. Her istekte
-(gövde aktarımı ve yönlendirmeler dahil) **15 saniye** zaman aşımı, **5 MiB**
-boyut sınırı uygulanır. Ses ve video birbirini beklemez. Dosyalar doğrudan
-userData altındaki oyun klasörüne stream edilir; tamamlanmamış .part dosyaları
-hata durumunda temizlenir. Başarılı her dosya games.json içindeki media.music
-veya media.video alanını günceller; game-media-updated IPC olayı arayüzdeki
-önizlemeyi hemen yeniler.
+MP3 and MP4 downloads use a queue independent of artwork scraping. Each request has
+a **15-second** timeout, including redirects and body transfer, and a **5 MiB** size
+limit. Audio and video do not wait for each other. Files are streamed directly to
+the game's cache directory under `userData`; failed transfers remove incomplete
+`.part` files. Each completed download updates `media.music` or `media.video` in
+`games.json`. The `game-media-updated` IPC event refreshes the renderer's preview
+without requiring another library scan.
 
-Öncelikli ve tüm otomatik indirmeler için kullanılan yollar:
+The preferred paths, used for all automatic downloads, are:
 
     app.getPath('userData')/media/{gameId}/theme.mp3
     app.getPath('userData')/media/{gameId}/preview.mp4
 
-Windows'ta userData geliştirmede genellikle %APPDATA%/zenith klasörüdür.
-Bu oyun klasöründeki dosyalar her zaman önceliklidir. Eski userData/media/music/{gameId}.mp3
-ve userData/media/videos/{gameId}.mp4 dosyaları ikinci tercih olarak okunur.
-Proje kökündeki media klasörleri artık kullanılmaz. Elle eklenen dosyalar için
-bu AppData yollarını kullanıp kütüphaneyi yenileyin; gameId games.json içinde bulunur.
+On Windows, `userData` is typically `%APPDATA%/zenith` during development. Files in
+these per-game directories always take precedence. Legacy files at
+`userData/media/music/{gameId}.mp3` and `userData/media/videos/{gameId}.mp4` remain
+readable as fallbacks. Project-root media directories are no longer used. To add
+media manually, use the appropriate AppData paths and rescan the library; game IDs
+are recorded in `games.json`.
 
-İndirilmiş medya tekrar indirilmez. Bulunamayan ses ve video ayrı ayrı 24 saat
-sonra veya **Scan library** ile yeniden aranır. Eski sağlayıcının
-başarısız arama kayıtları Archive.org denemesini geciktirmez. Ağ/erişim hataları,
-bozuk yanıtlar ve eksik dosyalar arayüzü dondurmaz. Her oyun için içerik bulunması
-ve harici servise kesintisiz erişim garanti değildir. Ücretsiz erişim, arşivdeki
-her parçanın açık lisanslı olduğu anlamına gelmez.
+Downloaded media is reused. Missing audio and video are retried independently after
+24 hours or when **Scan library** is selected. Failed lookups from the previous
+provider do not delay Archive.org requests. Network and access errors, malformed
+responses, and missing files do not freeze the interface. Content availability for
+every game and uninterrupted third-party service access are not guaranteed. Free
+access does not mean that every item in an archive has an open license.
 
-Bir kart üzerinde hover, klavye veya gamepad odağı 800 ms kaldığında arka
-plan kararır; varsa video döngüsü ve ses önizlemesi başlar. Ses 1,2 saniyede
-en fazla %30 seviyesine yükselir. MP3 varsa video sessiz oynatılır; yoksa videonun
-kendi sesi kullanılır. **Önizleme sesi** butonu sesi kapatır.
-Karttan ayrılma, başka oyuna geçme, pencerenin odağını kaybetmesi, BIOS modalı
-ve oyun başlatma durumlarında medya durdurulur ve başa alınır. Desteklenmeyen
-codec veya oynatma engeli arayüzü kilitlemez.
+After a card remains hovered or focused by keyboard or gamepad for 800 ms, its
+preview becomes active. Available video loops and audio previews begin playing;
+audio fades in over 400 ms to a maximum volume of 30%. When an MP3 is available,
+the video plays muted; otherwise, its own audio is used. Preview audio can be
+muted in **Settings → Audio** or with the preview-audio shortcut. Dashboard shading
+remains concentrated at the top and bottom so the central artwork stays visible.
 
-Testler: `npm run test:scraper` (çevrimdışı CDN/önbellek/medya akışı) ve
-`npm run test:media` (Electron içinde gecikme, ses seviyesi ve gezinme).
+Media stops and resets when the user leaves a card, selects another game, changes
+window focus, opens the BIOS panel, or launches a game. Leaving a card fades its
+music out over 150 ms; launching a game uses a 500 ms fade. Unsupported codecs or
+blocked playback do not lock the interface.
 
-Ekran genişliğine uyarlanan listede ok tuşları, D-pad veya sol analog ile gezinin. Gamepad'de
-LB/RB (klavyede PageUp/PageDown) konsol filtresini değiştirir, Y oyun seçeneklerini, H oyun rehberini
-açar, B/Escape aramadan çıkar veya konsol menüsünü kapatır.
+Tests: `npm run test:scraper` covers offline CDN, cache, and media behavior;
+`npm run test:media` checks preview delays, volume, and navigation in Electron.
 
-Üst bardaki saat sistem saatini HH:mm biçiminde her saniye yeniler. P1 rozeti
-ilk bağlı gamepad'i gösterir; cihaz pil verisi sağlıyorsa yüzde, sağlamıyorsa
-yeşil bağlantı göstergesi görünür. Pil yüzdesi standart Gamepad API'sinin parçası
-değildir; sistemin bilgisayar pili bu gösterge için kullanılmaz.
+Use the arrow keys, D-pad, or left stick to navigate the responsive library grid.
+**LB/RB** on a gamepad, or **PageUp/PageDown** on a keyboard, changes the console
+filter. **Y** opens Game Options, **H** opens the guide, and **B/Escape** leaves
+search or closes the active console menu.
 
-Alt durum çubuğu, başlatma butonu ve çekmece ipuçları son kullanılan girişe göre
-klavye tuşu veya renkli gamepad rozeti gösterir. Küçük analog sapmaları yok sayılır.
+The header clock reads the system time in `HH:mm` format and updates every second.
+The P1 badge represents the first connected gamepad. It displays a battery
+percentage when the device supplies one, or a green connection indicator otherwise.
+Battery percentage is not part of the standard Gamepad API; the computer's battery
+is not used for this indicator.
 
-**X** aramayı ve sanal klavyeyi açar. İlk oyun satırında yukarı gitmek odağı
-üst sınırda tutar; arama veya klavye açılmaz. Aramada gamepad **A** da sanal
-klavyeyi açabilir. Sadece odaklanmak veya fareyle tıklamak OSK açmaz.
-**D-pad/sol analog** harfler arasında gezer, **A** yazar, **X** siler,
-**Menu/Start**, **B** veya **Escape** klavyeyi kapatır. Boşluk, Temizle ve Bitti
-tuşları da vardır. Fiziksel klavyede **/** aramaya odaklanır; doğrudan metin girişi
-devam eder. Arama kutusunun yanındaki rozet etkin kısayolu gösterir.
-Sanal klavye açıkken kütüphane gamepad komutlarını almaz; metin taslakta tutulur
-ve kapanışta uygulanır. **B/Menu/Escape** sonrası önceki oyun yeni sonuçlarda
-varsa aynı karta, yoksa ilk sonuca odak dönülür. Hiç sonuç yoksa standart arama
-alanı odak alır; **X** ile arama tekrar düzenlenebilir. Sol analog ve D-pad tüm
-yönlerde aynı gezinme yolunu kullanır.
-`npm run test:controller` bu geçişleri, canlı saat ve pil durumlarını taklit
-gamepad ile gerçek Electron arayüzünde doğrular.
+The bottom bar, launch control, and drawer hints display keyboard keys or colored
+gamepad badges according to the most recently used input device. Small analog-stick
+movements are ignored.
 
-## Lore ve orijinal kılavuz çekmecesi
+**X** opens gamepad search and the on-screen keyboard (OSK). Moving up from the
+first game row keeps focus at the grid boundary; it does not open search or the
+keyboard. **A** can also open the OSK from the search input in gamepad mode. Merely
+focusing or clicking the input does not open it.
 
-Seçili oyunda **H** veya **Y → Game Options → Guide & Lore**
-sağdaki buzlu cam çekmeceyi açar. **Y/H**, **B** veya **Escape** ile kapanır.
-Arama kutusunda yazılan H harfi çekmeceyi açmaz. Çekmece açıkken arka plandaki
-oyun seçimi, başlatma ve konsol filtreleri giriş almaz; medya önizlemesi durur.
-Kapatınca odak önceki kontrole döner.
+On the OSK, **D-pad/left stick** moves between keys, **A** types, **X** deletes, and
+**Menu/Start**, **B**, or **Escape** closes the keyboard. Space, Clear, and Done keys
+are also available. On a physical keyboard, **/** focuses search and allows normal
+text input. The badge beside the search field shows the active shortcut.
 
-**Lore & İpuçları** sekmesi Wikipedia'nın İngilizce REST özetini kaynak bağlantısıyla
-gösterir. Yayın yılı ve geliştirici yalnızca özet metninden belirlenebiliyorsa
-doldurulur. Bulunamayan alanlar tahmin edilmez. Spoiler içermeyen başlangıç
-ipuçları genel, statik önerilerdir; harici bir yapay zekâ servisi kullanılmaz.
+While the OSK is open, gamepad input is isolated from the library. Search text is
+held as a draft and applied when the keyboard closes. After **B/Menu/Escape**,
+focus returns to the previously selected game if it remains in the results, or to
+the first result otherwise. If there are no results, the regular search input
+receives focus; **X** can reopen editing. The left stick and D-pad share the same
+navigation logic in all directions.
 
-Çekmece açıkken gamepad'de yalnızca **LB/RB** sekme değiştirir.
-**Sağ/sol analog Y** veya **D-pad yukarı/aşağı** içeriği yumuşak kaydırır.
-**Kılavuz Kitapçığı** sekmesinde **D-pad/sol analog sol/sağ** veya **sol/sağ ok**
-sayfa çevirir. Yön tuşları Lore sekmesinden çıkmaz. PageUp/PageDown uzun kaydırma
-yapar; **A** odaktaki kontrolü seçer. Sayfa butonları dairesel ok ikonlarıdır.
-Sekmeler fareyle veya Tab/Shift+Tab ve Enter ile de seçilebilir. İlk ve son
-sayfada gezinme sınırlandırılır. Kaynak bulunamazsa “Orijinal el kitapçığı
-bulunamadı” kartı gösterilir; indirilemeyen bir sayfa diğer sayfaları engellemez.
+`npm run test:controller` verifies these transitions, the live clock, and battery
+indicators with a simulated gamepad in the real Electron interface.
 
-Kılavuzlar önce Archive.org `videogamemanuals`, sonuç yoksa `manuals` ve
-`consolemanuals` koleksiyonlarında aynı oyun adıyla aranır. Platform ve bölge
-eşleşmeleri önceliklidir; çözüm/hint/strategy kitapçıkları alınmaz. İlk sayfa
-önceden, kalan sayfalar gezildikçe `userData/media/{gameId}/manual/` altında
-önbelleğe alınır. `index.json` sayfa sırasını, kardeş `lore.json` Wikipedia
-bilgisini saklar. Önbellekteki bilgi ve sayfalar çevrimdışı okunabilir.
+## Lore and Original Manual Drawer
 
-İstek başına **10 saniye** zaman aşımı uygulanır. JSON/XML yanıtları 2 MiB,
-sayfa görselleri 8 MiB ile sınırlandırılır; en fazla 512 sayfa listelenir.
-Gecikmiş yanıtlar kapatılan çekmeceyi veya yeni seçilen sayfayı değiştirmez.
+For the selected game, press **H**, or choose **Y → Game Options → Guide & Lore**,
+to open the frosted-glass drawer on the right. **Y/H**, **B**, or **Escape** closes
+it. Typing H in the search input does not open the drawer. While the drawer is
+open, background game selection, launching, and console filters do not receive
+input, and media previews stop. Closing it restores focus to the previous control.
 
-`createGuideService` içindeki `features: { manualsEnabled: true, loreEnabled: true }`
-ve `setFeatures()` gelecekteki Ayarlar ekranı için hazırlanmıştır. Kapatılan
-özellik ağ isteği yapmaz ve önbellekteki içeriği de göstermez. Şu anda ayrı bir
-Ayarlar arayüzü eklenmemiştir.
+The **Lore & Tips** tab displays the English Wikipedia REST summary with a source
+link. Release year and developer are populated only when they can be extracted
+from the summary; missing values are not guessed. Spoiler-free introductory tips
+are generic, static suggestions. No external AI service is used.
 
-Testler: `npm run test:guide` (sahte API, önbellek, bayraklar, zaman aşımı) ve
-`npm run test:guide-ui` (Electron IPC, Y/H/B/Escape, sayfalar, odak, çevrimdışı durumlar).
+While the drawer is open, **LB/RB** are the only gamepad controls that change tabs.
+The **right/left stick Y axis** or **D-pad up/down** scrolls the content smoothly.
+In the **Original Manual** tab, **D-pad/left stick left/right** or the **left/right
+arrow keys** turns pages. Directional input does not switch away from the Lore tab.
+**PageUp/PageDown** scrolls by a larger amount, and **A** activates the focused
+control. Page buttons use circular arrow icons. Tabs can also be selected with
+the mouse or with **Tab/Shift+Tab** and **Enter**. Navigation stops at the first and
+last pages. If no source is found, an **Original manual not found** card appears.
+A failed page download does not prevent other pages from loading.
 
-## Medya depolama kuralı
+Manual searches first use Archive.org's `videogamemanuals` collection, then fall
+back to `manuals` and `consolemanuals` using the same game title. Platform and
+region matches take priority; walkthroughs, hint books, and strategy guides are
+excluded. The first page is prefetched, and subsequent pages are cached as they
+are viewed under `userData/media/{gameId}/manual/`. The manual's `index.json` stores
+page order; the adjacent `lore.json` stores Wikipedia information. Cached
+information and pages remain readable offline.
 
-Yeni medya indiricileri ana süreçte `app.getPath('userData')` ile yapılandırılmalı
-ve `src/main/services/mediaPaths.js` içindeki `gameMediaDirectory(userData, gameId)`
-yardımcısını kullanmalıdır. İndirilen kapak, video, müzik ve kılavuzlar yalnızca
-`userData/media/{gameId}/` altında tutulur; kılavuz sayfaları `manual/` altındadır.
-Proje kökü, çalışma dizini veya oyun nesnesinin `mediaDirectory` alanı indirme
-hedefi olarak kullanılmaz. Ortak yardımcı mutlak userData yolu gerektirir ve
-klasör dışına çıkabilen oyun kimliklerini reddeder. Önbellek yazılamıyorsa proje
-dizinine geri düşülmez; isteğe bağlı medya sessizce atlanır.
+Each request has a **10-second** timeout. JSON/XML responses are limited to 2 MiB,
+page images to 8 MiB, and a manual to 512 listed pages. Late responses do not
+reopen a closed drawer or replace a newly selected page.
 
-`.gitignore` yerel ROM/medya/kayıt/log klasörlerini ve medya uzantılarını her
-derinlikte, büyük/küçük harften bağımsız dışlar. `.md` kaynak doküman uzantısı
-korunur; Genesis `.md` ROM'ları `games/` veya `roms/` içinde tutulmalıdır.
-Ignore kuralları önceden izlenen dosyaları veya Git geçmişini kaldırmaz.
-`npm run test:media-paths`, hedef klasörün değiştirilememesini ve gerçek Git ile
-yok sayma kurallarını doğrular.
+The `features: { manualsEnabled: true, loreEnabled: true }` configuration and
+`setFeatures()` method in `createGuideService` provide an extension point for a
+future Settings page. A disabled feature makes no network requests and does not
+display cached content. These feature flags do not yet have a dedicated Settings UI.
 
-Entegrasyon testi: `npm run test:local-games`. Test, geçici bir klasör ve gizli
-Electron penceresi kullanarak taramayı, kapakları, filtreleri, klavye ve simüle
-edilmiş gamepad girişlerini doğrular.
+Tests: `npm run test:guide` covers mocked APIs, caching, feature flags, and timeouts;
+`npm run test:guide-ui` covers Electron IPC, Y/H/B/Escape, pagination, focus, and
+offline states.
 
-## RetroArch ile oyun başlatma
+## Media Storage Policy
 
-RetroArch'ı proje kökünde `emulators/retroarch/retroarch.exe`, libretro DLL
-dosyalarını ise `emulators/retroarch/cores/` altında bulundurun. Paketlenmiş
-Windows uygulamasında `emulators` klasörü çalıştırılabilir dosyanın yanında olmalıdır.
-Linux paketinde bu klasör userData altında tutulur.
+New media downloaders must be configured in the main process with
+`app.getPath('userData')` and use `gameMediaDirectory(userData, gameId)` from
+`src/main/services/mediaPaths.js`. Downloaded covers, videos, music, and manuals
+belong only under `userData/media/{gameId}/`; manual pages belong in `manual/`.
+Do not use the project root, working directory, or a game object's `mediaDirectory`
+field as a download destination. The shared helper requires an absolute `userData`
+path and rejects game IDs that could escape the cache directory. If the cache is
+not writable, optional media is skipped without falling back to the project directory.
 
-Başlatma PS2, PS1, PSP, NDS, N64, GBA, SNES, NES ve Genesis için yapılandırılmıştır.
-PSP, `cores/ppsspp_libretro.dll` kullanır. PS2'de `cores/pcsx2_libretro.dll`
-tercih edilir; bulunamazsa `cores/lrps2_libretro.dll` kullanılır.
-PS1'de `duckstation_libretro.dll` tercih edilir; bulunamazsa
-`mednafen_psx_hw_libretro.dll` kullanılır. Diğer konsollar kütüphanede listelenir,
-ancak başlatma için core eşleştirmesi olmadığına dair uyarı gösterilir.
+`.gitignore` excludes local ROM, media, save, and log directories and media
+extensions at every depth, regardless of case. The `.md` extension remains
+available for source documentation; Genesis `.md` ROMs must be stored in `games/`
+or `roms/`. Ignore rules do not remove already tracked files or Git history.
+`npm run test:media-paths` verifies destination restrictions and ignore rules
+using real Git operations.
 
-Seçili oyunu **Enter**, gamepad **A** veya **Launch** butonuyla başlatın.
-Arama alanında Enter, oyun başlatmaz. ROM yolu ayrı bir süreç argümanı olarak
-iletilir; boşluk ve özel karakter içeren dosya adları desteklenir. RetroArch
-kendi klasöründe, `-L cores/<core>.dll <oyun_yolu> -f` argümanlarıyla açılır.
-RetroArch stdout/stderr çıktıları uygulamanın ana terminaline yazdırılır.
+Integration test: `npm run test:local-games` uses a temporary directory and a hidden
+Electron window to verify scanning, artwork, filtering, keyboard input, and
+simulated gamepad input.
 
-Başlatma sırasında animasyon gösterilir. Süreç açılınca uygulama gizlenir;
-emülatör kapandığında tekrar öne gelir. Aynı anda yalnızca bir oyun başlatılabilir.
-Eksik RetroArch, core veya ROM dosyaları ile süreç hataları kullanıcıya bildirilir.
-Hata diyaloğu açılırken veya süreç kapanırken başlatma/oynama göstergesi temizlenir;
-diyalog kapatıldıktan sonra yeniden başlatılabilir.
-RetroArch'ın kendisini emulators/retroarch/ içine yerleştirin. Eksik çekirdekler
-Zenith onay panelinden Libretro Buildbot üzerinden indirilir (Windows/Linux x64).
-BIOS dosyaları indirilmez; kullanıcı kendi dökümünü seçer.
+## Launching Games with RetroArch
 
-## Konsol kontrolleri ve ayarlar
+During Windows development, place RetroArch at
+`emulators/retroarch/retroarch.exe` in the project root and libretro DLLs under
+`emulators/retroarch/cores/`. Linux development uses the native `retroarch`
+executable and `.so` cores. Packaged Windows and Linux applications prepare a
+writable runtime under `app.getPath('userData')/emulators/retroarch/` from the
+bundled resources.
 
-| İşlem                                | Gamepad            | Klavye                                  |
-| ------------------------------------ | ------------------ | --------------------------------------- |
-| Oyun başlat                          | A                  | Enter                                   |
-| Oyun seçenekleri / Kılavuz           | Y → Guide & Lore   | O / H                                   |
-| Arama                                | X                  | /                                       |
-| Filtre paneli                        | View               | F                                       |
-| Konsol değiştir                      | LB / RB            | PageUp / PageDown                       |
-| Ayarlar                              | Menu               | Context Menu tuşu veya Settings düğmesi |
-| Oyun ekle                            | R3                 | + / Insert                              |
-| Oyun sil                             | L3                 | Delete                                  |
-| Geri / kapat                         | B                  | Escape                                  |
-| Zenith menüsü (ana ekran / oyun içi) | View + Menu / Home | Escape / F10                            |
+Default launch mappings cover the supported platforms, including GBC, GameCube,
+Wii, 3DS, Dreamcast, and the Atari systems. PSP uses `cores/ppsspp_libretro.dll`.
+PS2 prefers `cores/pcsx2_libretro.dll`, falling back to `cores/lrps2_libretro.dll`.
+PS1 prefers `duckstation_libretro.dll`, then `mednafen_psx_hw_libretro.dll`, then
+`swanstation_libretro.dll`. Linux uses the corresponding `.so` filenames. Games
+without an automatic mapping can use **Browse cores** to select a core manually.
 
-Medya sesini RT / M ile açıp kapatın; LT / R ile kütüphaneyi yeniden tarayın.
+Launch the selected game with **Enter**, gamepad **A**, or **Select / Launch**.
+Enter does not launch a game while the search input is active. The ROM path is
+passed as a separate process argument, so filenames containing spaces and special
+characters are supported. RetroArch runs with its own directory as `cwd`, using
+`-L <absolute_core_path> <game_path> -f --appendconfig <absolute_session_config>`.
+Its stdout and stderr are forwarded to the application's main terminal.
 
-Arama yalnızca açık komutla açılır; ilk sırada yukarı hareket odakta kalır.
-Fiziksel klavye/fare aramasında ekran klavyesi açılmaz. Ekran klavyesinde A yazar,
-X siler, B/Menu kapatır ve odak oyun kartına döner. Kılavuzda LB/RB sekmeleri
-sınırda durur; sağ analog/D-pad içerik kaydırır, sol/sağ kitapçık sayfasını çevirir.
+A launch animation is displayed while the process starts. Zenith hides once the
+emulator starts and returns to the foreground when it exits. Only one game session
+can run at a time. Missing RetroArch, core, or ROM files and process errors are
+reported to the user. Launching and playing indicators reset when an error dialog
+opens or the process ends, allowing another attempt after the dialog is dismissed.
 
-### Dashboard, ses ve sanal klavye
+Install RetroArch in the appropriate runtime directory. Missing cores are offered
+through Zenith's confirmation panel and downloaded from Libretro Buildbot for
+Windows/Linux x64. The physical core file is checked before RetroArch is spawned.
+The prompt offers **Download** and **Cancel**, with **Browse cores** available for
+manual selection. Download progress and errors are shown in the panel; a verified
+installation automatically retries the launch. BIOS files are never downloaded;
+users select their own dumps.
 
-Sağ/sol 48 px güvenli alanda 144×216 px posterler vardır. Ekrana sığan sayıda sütun
-ve 16 px sabit boşluk kullanılır; kartlar sola hizalıdır. İlk satır odaktayken
-yalnızca tek satır görünür; aşağı geçildiğinde vitrin 300 ms içinde iki satıra
-açılır. İlk satıra dönüldüğünde kapanır. Sütunlar 8 ile sınırlanmaz: 1920 px pencerede 11, 1280 px pencerede 7 kart sığar.
-Pencere daralınca kart boyutu korunur, satır başına kart sayısı azalır. D-pad/sol analog sütun sayısını
-izler; alt satırlar dikey ve yumuşak kayar. Üstte yalnızca oyun adı/platform kalır.
-Arka planın orta kısmı karartılmaz veya bulanıklaştırılmaz; gölge üst/alt bölgededir.
+## Controller Bindings and Settings
 
-Settings → Language, A ile açılır; yukarı/aşağı seçenek seçer, A uygular, B önce
-listeyi kapatır. Ayarların tamamında D-pad/sol analog ile gezilip B ile çıkılır.
-Settings → Audio iki kalıcı anahtar içerir: Menu sound effects ve Video & background
-preview audio. Menü efektleri `src/renderer/src/assets/sounds/` altındaki verilen
-`navigate.wav`, `toggle.wav` ve `launch.wav` dosyalarını Vite ile paketler. Sentetik
-ton veya WAV yükleme paneli yoktur. Menü sesleri kapalıyken gezinme ve toggle susar;
-başlatma sesi ayrı çalar ve önizleme 500 ms içinde kısılır. Gezinme sesleri dört
-Audio örneğiyle üst üste çalabilir. Önizleme 800 ms bekler, 400 ms içinde %30
-sese ulaşır; karttan ayrılınca müzik 150 ms içinde susar. Menü sesleri varsayılan açık, video/BGM sesi kapalıdır.
-Tercihler zenith-preferences yerel ayarında saklanır ve yeniden açılışta korunur.
+| Action                             | Gamepad            | Keyboard                            |
+| ---------------------------------- | ------------------ | ----------------------------------- |
+| Launch game                        | A                  | Enter                               |
+| Game Options / Guide               | Y → Guide & Lore   | O / H                               |
+| Search                             | X                  | /                                   |
+| Filter panel                       | View               | F                                   |
+| Change console                     | LB / RB            | PageUp / PageDown                   |
+| Settings                           | Menu               | Context Menu key or Settings button |
+| Add game                           | R3                 | + / Insert                          |
+| Delete game                        | L3                 | Delete                              |
+| Back / close                       | B                  | Escape                              |
+| Zenith menu (dashboard or in-game) | View + Menu / Home | Escape / F10                        |
 
-OSK yalnızca gamepad aramasıyla açılır. iOS düzenindeki üç harf satırının sonuna
-Backspace yerleşir. Küre tuşu TR/EN düzenini değiştirir; düzen tercihi saklanır.
-Alt satır ?123, küre, imleç okları, geniş Space, Clear ve Search/Done içerir.
-?123 / ABC harf ve sembol modlarını değiştirir; ← / → metindeki imleci taşır.
-Yazma/silme seçili metni veya imlecin konumunu kullanır. B/Menu kapatır, odak
-seçili oyun kartına döner. Fiziksel klavye aramasında OSK açılmaz.
+Toggle preview audio with **RT / M**; rescan the library with **LT / R**.
 
-### Menü & Çıkış Kombinasyonu
+Search opens only through an explicit command; moving up from the first row keeps
+focus on that row. Physical keyboard and mouse searches do not open the OSK. On
+the OSK, A types, X deletes, and B/Menu closes it and restores focus to the game
+card. In the guide, LB/RB tab navigation stops at the ends; the right stick or
+D-pad scrolls content, and left/right turns manual pages.
 
-Settings açılınca ilk odak Language üzerindedir. Filtre paneli All consoles ile
-başlar; gamepad hareketleri açık panelde kalır, B seçimi değiştirmeden karta döner.
-Menu & Exit Combination satırı aktif cihazın rozetlerini gösterir. A / Enter ile
-düzenleyin; yanıp sönen iki kutu sırayla iki farklı tuşu kaydeder. B / Escape
-iptal eder ve eski kombinasyonu korur. Gamepad ve klavye atamaları ayrı saklanır;
-userData/zenith-preferences.json ile yeniden başlatmada ve oyun içi köprüde korunur.
-Varsayılan View veya Menu tek başına bırakıldığında filtre/ayar açar; birlikte
-basıldığında bu eylemler sızmadan Zenith menüsü açılır. Atanan gamepad tuşlarının
-Zenith tekil eylemleri kombinasyonla çakışmaması için bırakılana kadar ertelenir.
+### Dashboard, Audio, and On-Screen Keyboard
 
-### Çekirdekler ve BIOS
+Poster cards measure 144×216 px, with a 48 px safe zone on each side. The grid uses
+as many columns as fit, a fixed 16 px gap, and left alignment. Only one row is
+visible while the first row has focus. Moving down expands the viewport to two
+rows over 300 ms; returning to the first row collapses it. Columns are not capped
+at eight: a 1920 px window fits 11 cards, while a 1280 px window fits seven.
+Narrower windows retain the card dimensions and reduce the column count.
+D-pad and left-stick navigation follows the current column count, and lower rows
+scroll vertically and smoothly. The hero area shows only the game title and
+platform. The center of the background is neither darkened nor blurred; shading
+is confined to the top and bottom.
 
-Eksik çekirdek panelindeki Download core, yalnızca izin verilen DLL'i resmi
-Libretro Windows/Linux x64 arşivinden indirir. ZIP CRC, boyut, PE/ELF64 başlığı ve
-hedef dosya adı kontrol edilir; mevcut çekirdek üzerine yazılmaz. Sunucuda bulunmayan
-çekirdek veya bağlantı hatası panelde gösterilir; RetroArch menüsüne yönlendirilmez.
-PS2 için PCSX2 ardından LRPS2, PS1 için DuckStation/Beetle PSX HW/SwanStation denenir.
+In **Settings → Language**, A opens the dropdown, up/down selects an option, A
+applies it, and B closes the dropdown first. Use the D-pad or left stick throughout
+Settings, and B to leave. **Settings → Audio** provides two persistent switches:
+**Menu sound effects** and **Video & background preview audio**.
 
-Settings → System & Console Status alt sayfası yalnızca kütüphanede bulunan
-konsolları gösterir. Başlatmadan önce yalnızca PS2, PS1 ve Dreamcast BIOS dosyaları
-denetlenir. NDS, PSP, GBA, N64 ve SNES için BIOS engeli uygulanmaz. Select / upload BIOS
-kullanıcının seçtiği dosyayı ilgili RetroArch system klasörüne kopyalar:
+Menu effects use the supplied `navigate.wav`, `toggle.wav`, and `launch.wav` files
+under `src/renderer/src/assets/sounds/`, bundled through Vite. There are no synthetic
+tones or WAV upload controls. Disabling menu sounds silences navigation and toggle
+effects; the launch sound plays independently while preview audio fades out over
+500 ms. Navigation effects use a pool of four Audio instances so rapid movements
+can overlap naturally. Previews wait 800 ms, fade in to 30% over 400 ms, and fade
+out over 150 ms when a card is left. Menu sounds are enabled by default; video/BGM
+audio is disabled. Preferences are stored under the `zenith-preferences` local
+storage key and survive application restarts.
 
-- PS2: system/pcsx2/bios/ — 4 veya 8 MiB .bin dökümü.
-- PS1: system/ — bölgeye göre scph5500.bin / scph5501.bin / scph5502.bin.
-- Dreamcast: system/dc/ — dc_boot.bin.
+The OSK opens only for gamepad search. It uses an iOS-style three-row letter layout
+with Backspace at the end of the final letter row. The globe key switches between
+TR and EN layouts, and the layout preference is saved. The bottom row contains
+?123, the globe, cursor arrows, a wide Space key, Clear, and Search/Done.
+?123 / ABC toggles letters and symbols; ← / → moves the text cursor. Insertion and
+deletion respect the selection or cursor position. B/Menu closes the OSK and
+restores focus to the selected game card. Physical keyboard search does not open it.
 
-Bu kontrol dosya adı ve boyut teşhisidir; BIOS içeriğinin doğruluğunu garanti etmez.
-Aynı adlı dosyanın üzerine yazılmaz. PS2 .rom uzantısı içerik değişmeden .bin olur.
-Yükleme sonrası Ready olduğunda Launch game seçeneği görünür. Delete BIOS onayı
-yalnızca seçilen konsolun BIOS dosyalarını siler; ortak system klasörü korunur. Open folder
-hedef klasörü Windows Gezgini'nde açar. BIOS veya ROM dağıtılmaz/indirilmez.
+### Menu and Exit Combination
 
-### Oturum ve oyun yönetimi
+Settings initially focuses the Language dropdown. The filter panel starts on
+**All consoles**; gamepad input stays within the open panel, and B returns to the
+card without changing the filter. **Menu & Exit Combination** shows badges for the
+active input device. Press A or Enter to edit it; two pulsing boxes capture two
+different keys or buttons in sequence. B or Escape cancels and preserves the
+previous combination. Gamepad and keyboard mappings are stored separately in
+`userData/zenith-preferences.json`, persist across restarts, and are shared with
+the in-game input bridge.
 
-Oyun bağımsız spawn sürecinde çalışır; Zenith gizlenir ve süreç exit olayında geri
-gelir. Her oturumun save/state dizini userData/media/{gameId}/ altında tutulur.
-Windows XInput köprüsü emülatör odaktayken yapılandırılan gamepad kombinasyonunu,
-Home ve klavye kısayollarını izler. Varsayılan kombinasyon View + Menu, klavye
-yedekleri Escape / F10’dur. Home tuşunu Windows/kol sürücüsü sunmayabilir veya
-Xbox Game Bar devralabilir. Zenith menüsünde Return to game, Stop game & return
-to Zenith ve Quit to desktop bulunur; ana ekran menüsünde de uygulamadan çıkılır.
-RetroArch oturum ayarlarında input_menu_toggle_gamepad_combo=0,
-input_menu_toggle_btn=nul ve input_menu_toggle=nul uygulanır. Escape’in doğrudan
-emülatörü kapatmaması için RetroArch çıkış atamaları da oturumda kapatılır.
-RetroArch'a pause_nonactive=true verilir; menü odağında oyun duraklar. Diğer
-uygulamaların/global Game Bar kısayollarının ayarları değiştirilmez.
+With the default mapping, releasing View or Menu individually opens filters or
+Settings. Pressing them together opens the Zenith menu without triggering those
+individual actions. Individual Zenith actions assigned to combination buttons are
+deferred until release to prevent conflicts.
 
-Add game seçilen ROM/ISO dosyasını asenkron olarak merkezi games/ klasörüne
-kopyalar (Linux’ta geliştirme dahil userData/games/). Kaynak dosya değiştirilmez;
-aynı adlı oyun üzerine yazılmaz, yeni kopyaya numara eklenir. Kütüphane merkezi
-kopyayı kullanır; masaüstündeki orijinal silinse de oyun korunur. Delete onayı
-bu merkezi ROM dosyasını, kütüphane kaydını ve userData/media/{gameId}/ altındaki
-medya/manual/save verilerinin tamamını kalıcı olarak siler. Eski sürümden kalan
-harici referanslarda kaynak dosya korunur, yalnızca Zenith kaydı ve önbelleği kaldırılır. Onay metni kaynak ROM
-silme işlemini açıkça belirtir; onaydan önce dosyalara dokunulmaz. Silme, devam eden scraper yazılarını bekler ve önbelleği kaldırır.
+### Cores and BIOS Files
 
-Dinamik medya yalnızca app.getPath('userData')/media/ altında saklanır. DLL/EXE/BIOS,
-ROM ve medya kalıpları .gitignore ve dağıtım hariç tutma kurallarıyla korunur.
-Yalnızca kullanıcı tarafından verilen üç uygulama WAV dosyası için dar kapsamlı
-Git istisnası vardır; indirilen oyun medyası bu istisnaya girmez.
-Önceden takip edilen RetroArch DLL/EXE dosyaları diskte korunarak Git indeksinden
-çıkarılmıştır; geçmiş commit'ler yeniden yazılmamıştır.
+The missing-core panel downloads only an allowed core file from the official
+Libretro Windows/Linux x64 archive. ZIP CRC, size, PE/ELF64 headers, and the target
+filename are validated. Valid installed cores are reused; empty or invalid files
+can be replaced through a verified, atomic installation. Missing server files and
+connection errors appear in the panel rather than opening RetroArch's menu.
+PS2 tries PCSX2 followed by LRPS2; PS1 tries DuckStation, Beetle PSX HW, and SwanStation.
 
-Testler: npm run test:console-services, npm run test:console, npm run test:bios,
-npm run test:launcher, npm run test:controller, npm run test:guide-ui,
-npm run test:media. Ağ, ROM, DLL ve gamepad yanıtları sentetiktir; fiziksel kol ve
-RetroArch uyumluluğu ayrıca donanım üzerinde denenmelidir.
+**Settings → System & Console Status** lists only platforms represented in the
+library. Before launch, BIOS checks apply only to PS2, PS1, and Dreamcast. NDS,
+PSP, GBA, N64, and SNES do not have a BIOS gate. **Select / upload BIOS** copies the
+selected file to the appropriate RetroArch system directory:
 
-## Yasal Uyarı / Legal Disclaimer
+- PS2: `system/pcsx2/bios/` — a 4 or 8 MiB `.bin` dump.
+- PS1: `system/` — `scph5500.bin`, `scph5501.bin`, or `scph5502.bin`, depending on region.
+- Dreamcast: `system/dc/` — `dc_boot.bin`.
 
-Zenith OS yalnızca bir arayüz ve kütüphane yönetim aracıdır.
-Bu yazılım hiçbir telifli oyun ROM'u, ISO dosyası veya BIOS verisi içermez ve dağıtmaz.
-Kullanıcılar yalnızca mülkiyetine sahip oldukları fiziksel oyunların ve konsol donanımlarının
-yasal yedeklerini kullanmaktan kendileri sorumludur.
+These checks validate filenames and sizes; they do not guarantee that a BIOS dump
+is correct. Existing files with the same name are not overwritten. PS2 `.rom`
+files receive a `.bin` extension without changing their contents. After upload,
+a **Ready** state exposes the **Launch game** option. Confirming **Delete BIOS**
+removes only the selected platform's BIOS files and preserves the shared system
+directory. **Open folder** opens the destination in Windows Explorer. Zenith does
+not distribute or download BIOS files or ROMs.
 
-Launcher testi: `npm run test:launcher`. Test gerçek Electron IPC ve arayüzünü,
-taklit emülatör süreci ve iletişim kutularıyla doğrular; gerçek ROM çalıştırmaz.
+### Sessions and Game Management
+
+Each game runs in a detached child process. Zenith hides and returns when the
+process emits `exit`. Per-session save and state directories live under
+`userData/media/{gameId}/`. On Windows, the XInput bridge monitors the configured
+gamepad combination, Home, and keyboard shortcuts while the emulator has focus.
+The default combination is View + Menu, with Escape / F10 as keyboard fallbacks.
+Windows or the controller driver may not expose Home, and Xbox Game Bar may
+intercept it. The Zenith menu offers **Return to game**, **Stop game & return to
+Zenith**, and **Quit to desktop**. The dashboard menu also allows the application
+to exit.
+
+RetroArch session configuration sets `input_menu_toggle_gamepad_combo=0`,
+`input_menu_toggle_btn=nul`, and `input_menu_toggle=nul`. RetroArch's exit bindings
+are also disabled for the session so Escape does not directly terminate the
+emulator. `pause_nonactive=true` pauses the game while the Zenith menu has focus.
+The application does not change other applications' settings or global Game Bar
+shortcuts.
+
+**Add game** asynchronously copies the selected ROM/ISO into the central `games/`
+directory, or `userData/games/` on Linux, including development builds. The source
+file is unchanged. Existing games with the same name are not overwritten; the new
+copy receives a numbered filename. The library references this central copy, so
+removing the original desktop file does not remove the game from Zenith.
+
+Confirming **Delete** permanently removes the central ROM file, library entry,
+and all media, manual, and save data under `userData/media/{gameId}/`. For legacy
+external references, the original source file is preserved and only Zenith's
+entry and cache are removed. The confirmation explicitly identifies source-ROM
+deletion; no files are changed before confirmation. Deletion waits for active
+scraper writes before removing the cache.
+
+Dynamic media is stored only under `app.getPath('userData')/media/`. DLL, EXE, BIOS,
+ROM, and media patterns are protected by `.gitignore` and distribution exclusions.
+A narrow Git exception permits the three supplied application WAV files; downloaded
+game media is not covered by that exception. Previously tracked RetroArch DLL/EXE
+files were removed from the Git index while preserving local copies. Historical
+commits were not rewritten.
+
+Tests: `npm run test:console-services`, `npm run test:console`, `npm run test:bios`,
+`npm run test:launcher`, `npm run test:controller`, `npm run test:guide-ui`, and
+`npm run test:media`. Network, ROM, DLL, and gamepad data are synthetic; physical
+controller and RetroArch compatibility require separate hardware testing.
+
+## Legal Notice
+
+Zenith OS is a frontend and library-management tool. It does not include or
+distribute copyrighted game ROMs, ISO files, or BIOS data. Users are responsible
+for using legally obtained backups of the physical games and console hardware
+they own.
+
+Launcher test: `npm run test:launcher` exercises the real Electron IPC and interface
+with a mocked emulator process and dialogs; it does not run actual ROMs.
 
 ## Recommended IDE Setup
 
@@ -360,7 +414,7 @@ $ npm run dev
 ### Build
 
 ```bash
-# For windows
+# For Windows
 $ npm run build:win
 
 # For macOS
@@ -370,144 +424,167 @@ $ npm run build:mac
 $ npm run build:linux
 ```
 
-## Windows ve Linux / Steam Deck
+The macOS command remains in the project scripts, but the bundled RetroArch
+validation currently supports Windows and Linux only.
 
-- Windows: npm run build:win → klasik NSIS kurulum sihirbazı (x64).
-- Linux: npm run build:linux → AppImage ve deb (x64); Linux çıktıları Linux CI/host üzerinde derlenmelidir.
-- Geliştirmede emulators/retroarch/retroarch.exe (Windows) veya emulators/retroarch/retroarch (Linux) kullanılır.
-- Linux oyun klasörü geliştirmede de userData/games/ olur. Paketlenmiş Linux'ta emülatör klasörleri app.getPath('userData') altındadır;
-  tipik yol ~/.config/zenith/emulators/retroarch/retroarch. AppImage mount dizinine yazılmaz.
-- Linux RetroArch dosyasına çalıştırma izni verilmiş olmalıdır. Windows DLL'leri Linux'ta
-  yüklenmez; sistemine uygun .so çekirdeği indirilir. Paketli uygulama gömülü RetroArch'ı ilk açılışta userData'ya hazırlar.
-- Steam Deck'te AppImage'a çalıştırma izni verip Steam'e Steam dışı oyun olarak ekleyin;
-  Steam Input için standart Gamepad düzenini kullanın. Steam/Guide tuşunu SteamOS ayırabilir.
-  Linux oyun içi köprüsü sistemde Python 3 ve SDL2 varsa gamepad kombinasyonlarını
-  okur; özel klavye kombinasyonları X11 gerektirir. Wayland/SteamOS masaüstü
-  kısıtları bu arka plan erişimini engelleyebilir. Escape/F10 yedekleri de masaüstü
-  global kısayol desteğine bağlıdır; Steam/Guide tuşunun devralınması garanti edilmez.
-- Yollar path.join/path.normalize ile kurulur; Linux'ta farklı harf büyüklükleri ayrı
-  dosyalardır. Yerel dosya URL'leri pathToFileURL ile oluşturulur. Vite geliştirme
-  sunucusunda file:// erişim kısıtını aşmadan medya göstermek için yalnızca izin verilen
-  dosyaları sunan game-media/game-cover protokolleri korunur.
+## Windows, Linux, and Steam Deck
 
-npm run test:platform: Linux yol/ELF/BIOS ve Windows portable ayrımını mock ortamında test eder.
-Linux/Steam Deck üzerinde gerçek donanım testi bu Windows çalışma ortamında yapılmamıştır.
+- Windows: `npm run build:win` produces the classic NSIS setup wizard for x64.
+- Linux: `npm run build:linux` produces AppImage and deb packages for x64. Build
+  Linux artifacts on a Linux CI runner or host.
+- Development uses `emulators/retroarch/retroarch.exe` on Windows or
+  `emulators/retroarch/retroarch` on Linux.
+- Linux stores games in `userData/games/`, including during development. Packaged
+  Linux builds keep emulator directories under `app.getPath('userData')`, typically
+  `~/.config/zenith/emulators/retroarch/retroarch`. Nothing is written to the AppImage
+  mount directory.
+- The Linux RetroArch executable must have execute permission. Windows DLLs cannot
+  be loaded on Linux; the application downloads matching `.so` cores. Packaged
+  applications prepare the bundled RetroArch runtime in `userData` on first launch.
+- On Steam Deck, mark the AppImage as executable and add it to Steam as a non-Steam
+  game. Use the standard Gamepad layout in Steam Input. SteamOS may reserve the
+  Steam/Guide button. The Linux in-game bridge reads controller combinations when
+  Python 3 and SDL2 are available; custom keyboard combinations require X11.
+  Wayland or SteamOS desktop restrictions may prevent this background access.
+  Escape/F10 fallbacks also depend on desktop global-shortcut support.
+  Intercepting Steam/Guide is not guaranteed.
+- Paths are constructed with `path.join` and `path.normalize`; filenames are
+  case-sensitive on Linux. Local file URLs use `pathToFileURL`. The `game-media`
+  and `game-cover` protocols serve only allowed files so the Vite development
+  server can display local media without bypassing `file://` access restrictions.
 
-Game Options yalnızca Guide & Lore ve Delete game içerir; ilk odak rehbere gider.
-Game Options seçili indeksi DOM odağından ayrı tutar, yeniden açıldığında sıfırlar;
-pencere odağı geri geldiğinde seçimi onarır. B kapattığında odak ilgili karta döner. Konsol filtresi sadece kütüphanedeki
-konsolları ve All consoles seçeneğini gösterir; dört yönlü grid gezinmesi desteklenir.
+`npm run test:platform` verifies Linux path, ELF, and BIOS behavior and Windows
+portable paths in a mocked environment. Linux and Steam Deck hardware tests have
+not been performed in this Windows development environment.
 
-`npm run test:import-hotkeys` merkezi kopyalama ve kombinasyon mantığını;
-`npm run test:hotkeys` iki aşamalı atama/iptal, kalıcılık, ana ekran/oyun menüsü,
-native köprü mesajları ve RetroArch oturum ayarlarını sentetik verilerle doğrular.
+Game Options contains only **Guide & Lore** and **Delete game**, with initial focus
+on the guide. Its selected index is maintained separately from DOM focus, resets
+when reopened, and is restored when window focus returns. B closes the panel and
+returns focus to the associated card. The console filter lists only platforms
+present in the library plus **All consoles**, with four-direction grid navigation.
 
-Oyun Ekle filtresi Atari .a26/.a78/.lnx, .smd/.v64 ve .bin/.rom/.atx/.zip/.7z
-dosyalarını da kapsar; ikinci filtre Tüm Dosyalar’dır. Genel dump ve arşiv
-uzantıları tek başına konsolu belirlemez: bu dosyalar Unassigned olarak korunur.
-ZIP/7z kendiliğinden açılmaz; gerektiğinde oyun için Gözat üzerinden uygun core seçin.
-Atari 2600/7800/Lynx artık Stella/ProSystem/Beetle Lynx varsayılan eşlemelerini kullanır.
+`npm run test:import-hotkeys` verifies central imports and combination handling.
+`npm run test:hotkeys` covers two-step assignment and cancellation, persistence,
+dashboard and in-game menus, native bridge messages, and RetroArch session settings
+using synthetic data.
 
-## Geliştirici mimarisi ve dağıtım kontrolü
+The Add game filter includes Atari `.a26`/`.a78`/`.lnx`, `.smd`/`.v64`, and
+`.bin`/`.rom`/`.atx`/`.zip`/`.7z`. **All Files** is the second filter. Generic dump
+and archive extensions do not identify a platform on their own; those files remain
+**Unassigned**. ZIP/7z files are not extracted automatically. Use **Browse cores**
+to choose a suitable core for a game when needed. Atari 2600, Atari 7800, and Atari
+Lynx use Stella, ProSystem, and Beetle Lynx as their default mappings.
 
-Tam dosya/IPC envanteri, Gözat çekirdek akışı, katkı ve telif sınırları için [ARCHITECTURE.md](ARCHITECTURE.md) belgesine bakın.
-`npm run check:distribution` Git indeksindeki yasak runtime dosyalarını denetler;
-`git config core.hooksPath .githooks` yerel pre-commit korumasını etkinleştirir.
-Geçmiş commit’ler ve asset lisansları yayın öncesi ayrıca gözden geçirilmelidir.
+## Developer Architecture and Distribution Checks
 
-## RetroArch: geliştirici kurulumu ve üretim paketi
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete file and IPC inventory,
+core-browser workflow, contribution guidance, and copyright boundaries.
+`npm run check:distribution` checks the Git index for prohibited runtime files;
+`git config core.hooksPath .githooks` enables the local pre-commit guard. Review
+historical commits and asset licenses separately before publishing a release.
+
+## RetroArch Developer Bootstrap and Production Packaging
 
 ```sh
 npm ci
 npm run setup:emulators
 npm run dev
-# Windows x64 kurulum sihirbazı:
+# Windows x64 setup wizard:
 npm run build:win
-# Linux host, native Linux RetroArch prepared first:
+# Linux host, with native Linux RetroArch prepared first:
 npm run build:linux
 ```
 
-- Windows x64 bootstrap, [resmi stable dizininden](https://buildbot.libretro.com/stable/)
-  en yüksek kararlı sürümü bulur, `RetroArch.7z` arşivini akışla indirir ve
-  `emulators/retroarch/` altına çıkarır. 7-Zip geliştirme bağımlılığı npm ile gelir.
-  Mevcut `retroarch.exe` varsa kurulum korunur; otomatik güncelleme/üzerine yazma yapılmaz.
-- Linux'ta script klasör iskeletini hazırlar ve kurulum yönergesini gösterir;
-  otomatik Linux binary indirmesi yapmaz. Native x64 RetroArch ve bağımlılıklarını
-  `emulators/retroarch/` içine hazırlayın; `retroarch` çalıştırılabilir olmalıdır.
-  Windows üzerinde Linux paketi için Windows emülatörünü kullanmayın.
-- Git yalnız iki boş `.gitkeep` dosyasını içerir. `extraResources` yerel RetroArch'ı
-  `resources/emulators/retroarch/` içine, ASAR dışında paketler. BIOS/system,
-  kişisel config, kayıt, ROM, önbellek ve log dizinleri pakete alınmaz.
-  RetroArch'ın çalışma DLL'leri ve assets dahil edilir; lisans dosyaları korunur.
-  `cores/**` paket dışında tutulur; çekirdekler kullanıcının onayıyla sonradan indirilir.
-- `beforePack` hedef işletim sisteminin çalıştırılabilir dosyasını doğrular;
-  eksik/yanlış kurulumla son kullanıcı paketi oluşturmayı durdurur.
-- Windows ve Linux paketleri ilk açılışta RetroArch'ı
-  `app.getPath('userData')/emulators/retroarch/` altına arka planda hazırlar.
-  Sonraki açılışlarda yalnız eksik/boş dosyalar tamamlanır; mevcut ayarlar korunur.
-  Kilitli autoconfig/CFG dosyaları loglanıp atlanır ve sonraki açılışta yeniden denenir.
-  Böylece cores/BIOS yazımı Program Files veya salt okunur AppImage'a yapılmaz.
-  Mevcut kullanıcı kurulumu korunur; uygulama güncellemesi onu otomatik değiştirmez.
-- `npm run build` yalnız Main/Preload/Renderer derlemesidir; installer üretmez.
-  Emülatör gömme işlemi `build:win`, `build:linux` ve `build:unpack` ile gerçekleşir.
-- Dağıtılan RetroArch ve seçilen core'ların lisans/kaynak sağlama yükümlülükleri
-  release hazırlığının parçasıdır; `.gitignore` Git koruması ile paketleme aynı şey değildir.
+- On Windows x64, the bootstrap script finds the newest stable version in the
+  [official stable directory](https://buildbot.libretro.com/stable/), streams the
+  `RetroArch.7z` archive, and extracts it into `emulators/retroarch/`. The 7-Zip
+  development dependency is installed through npm. If `retroarch.exe` already
+  exists, the installation is preserved without automatic updates or overwrites.
+- On Linux, the script creates the directory skeleton and prints setup instructions;
+  it does not download Linux binaries automatically. Place native x64 RetroArch and
+  its dependencies in `emulators/retroarch/`, and ensure `retroarch` is executable.
+  Do not use a Windows emulator binary when preparing a Linux package.
+- Only the two empty `.gitkeep` files in the emulator skeleton are tracked by Git.
+  `extraResources` packages the local RetroArch installation under
+  `resources/emulators/retroarch/`, outside ASAR. BIOS/system, personal configuration,
+  saves, ROMs, cache, and log directories are excluded. RetroArch runtime DLLs and
+  assets are included, and license files are preserved. `cores/**` is excluded;
+  cores are downloaded later with the user's approval.
+- `beforePack` validates the executable for the target operating system and stops
+  packaging when the emulator installation is missing or has the wrong format.
+- On first launch, Windows and Linux packages prepare RetroArch in the background
+  under `app.getPath('userData')/emulators/retroarch/`. Subsequent launches fill only
+  missing or empty files and preserve existing settings. Locked autoconfig/CFG
+  files are logged, skipped, and retried on the next launch. Cores and BIOS files
+  are therefore written to the writable runtime rather than Program Files or a
+  read-only AppImage. Existing user installations are preserved; application updates
+  do not replace them automatically.
+- `npm run build` compiles only Main, Preload, and Renderer; it does not produce an
+  installer. `build:win`, `build:linux`, and `build:unpack` bundle the emulator.
+- License and corresponding-source obligations for distributed RetroArch and any
+  selected cores are part of release preparation. Git ignore rules and package
+  exclusions are separate controls.
 
-## Windows NSIS kurulum sihirbazı
+## Windows NSIS Setup Wizard
 
-Varsayılan Windows hedefi NSIS'tir: oneClick=false, perMachine=false,
-allowToChangeInstallationDirectory=true. Masaüstü/Başlat menüsü kısayolları ve
-bitişte çalıştır seçeneği açıktır; differentialPackage=false. Artifact:
-dist/zenith-1.0.0-setup.exe (sürüm package.json'dan gelir).
+The default Windows target is NSIS, with `oneClick=false`, `perMachine=false`, and
+`allowToChangeInstallationDirectory=true`. Desktop and Start Menu shortcuts and
+launch-after-install are enabled; `differentialPackage=false`. The artifact is
+`dist/zenith-1.0.0-setup.exe`, with the version read from `package.json`.
 
-npm run build:win kaynakları derler ve NSIS paketini oluşturur.
-Yalnız paketlemek için npx electron-builder --win nsis --x64 kullanılabilir.
-Portable gerektiğinde ayrıca npx electron-builder --win portable --x64 çalıştırılır.
-forceCodeSigning=false ve signAndEditExecutable=false geliştirme paketlemesinde
-sertifika gerektirmez; bunlar Windows güvenlik ilkesini değiştirmez.
+`npm run build:win` compiles the source and creates the NSIS package. To package an
+existing build, use `npx electron-builder --win nsis --x64`. A portable executable
+can be built separately with `npx electron-builder --win portable --x64`.
+`forceCodeSigning=false` and `signAndEditExecutable=false` allow development
+packaging without a certificate; they do not alter Windows security policy.
 
-scripts/nsis-process.cjs, mevcut beforePack doğrulamasından Windows'ta etkinleşir.
-electron-builder 26.15.3 WineVmManager.exec çağrısında yalnız boş argümanlı,
-RunAsInvoker ortamlı geçici EXE işlemini normalleştirir: mutlak dosya yolu,
-korunan Windows ortamı (SystemRoot, PATH, TEMP), gizli yardımcı pencere.
-UNKNOWN/EBUSY/EPERM/EACCES spawn hatalarını 250/750/1500/3000 ms aralıklarla
-sınırlı tekrarlar; normal hata çıkış kodlarını tekrar etmez ve kalıcı hatayı
-build'e geri iletir. node_modules dosyaları, NSIS cache ACL'leri ve Windows
-koruma ayarları değiştirilmez. USE_SYSTEM_MAKENSIS zorlanmaz; builder'ın
-kendi NSIS/compiler/plugin seti korunur.
+On Windows, `scripts/nsis-process.cjs` is activated by the existing `beforePack`
+validation. For electron-builder 26.15.3, it normalizes only temporary EXE calls
+through `WineVmManager.exec` that have no arguments and use the `RunAsInvoker`
+environment. It supplies an absolute executable path, preserves the Windows
+environment (`SystemRoot`, `PATH`, and `TEMP`), and hides the helper window.
+`UNKNOWN`/`EBUSY`/`EPERM`/`EACCES` spawn errors receive bounded retries after
+250/750/1500/3000 ms. Normal nonzero process exits are not retried, and persistent
+errors propagate to the build. The adapter does not modify `node_modules`, NSIS
+cache ACLs, or Windows protection settings. `USE_SYSTEM_MAKENSIS` is not forced;
+electron-builder retains its own NSIS compiler and plugins.
 
-WineVm adı Windows'ta Wine kurulduğu anlamına gelmez; bu dal doğrudan Windows
-EXE'sini çalıştırır. Uninstaller üretimi, makensis çağrısından sonra geçici
-kurucunun çalıştırılmasını da içerir. Yardımcı adaptör bu ayrımı hedefler;
-electron-builder sürüm yükseltmelerinde tests/nsis-process.test.mjs ve gerçek
-NSIS build birlikte doğrulanmalıdır. Test, ortam koruma, sınırlı tekrar ve
-sihirbaz yapılandırmasını kapsar. Kalıcı işletim sistemi engelleri bypass edilmez.
+The `WineVm` name does not mean that Wine is installed on Windows; this branch runs
+Windows executables directly. Uninstaller generation also runs the temporary
+installer after `makensis`. The adapter targets that specific step. When upgrading
+electron-builder, run both `tests/nsis-process.test.mjs` and a real NSIS build. The
+test covers environment preservation, bounded retries, and wizard configuration.
+Persistent operating-system restrictions are not bypassed.
 
-## RetroArch synchronization and downloaded core files
+## RetroArch Synchronization and Downloaded Core Files
 
 Every launch supplies a per-game `userData/media/{gameId}/session.cfg` through
 `--appendconfig` using an absolute path. It sets `video_vsync = "true"`,
 `video_refresh_rate = "60.0"`, `audio_sync = "true"`, `audio_rate_control = "true"`,
 `fastforward_ratio = "1.0"`, `video_max_swapchain_images = "3"`, and
-`vrr_runloop_enable = "true"`. These session settings also apply to existing installations.
-The configured refresh-rate value is 60.0 Hz; actual game timing still needs validation
-with the core, audio driver and display in use. See the
+`vrr_runloop_enable = "true"`. These session settings also apply to existing
+installations. The configured refresh-rate value is 60.0 Hz; actual game timing
+still requires validation with the core, audio driver, and display in use. See the
 [upstream configuration](https://github.com/libretro/RetroArch/blob/master/retroarch.cfg).
 
-Session configuration also disables `notification_show_osd`, `notification_show_autoconfig`,
-`video_osd_widgets`, `notification_show_core_load`, and the classic text OSD via
-`video_font_enable`. On Windows it selects `audio_driver = "xaudio"`; Linux/Steam Deck
-keeps its native audio driver. Audio is enabled and unmuted at `audio_volume = "0.0"`
-(0 dB). These settings do not change the operating system's mixer or output device.
+Session configuration also disables `notification_show_osd`,
+`notification_show_autoconfig`, `video_osd_widgets`, `notification_show_core_load`,
+and the classic text OSD through `video_font_enable`. On Windows, it selects
+`audio_driver = "xaudio"`; Linux and Steam Deck retain their native audio driver.
+Audio is enabled with `audio_enable = "true"`, unmuted with
+`audio_mute_enable = "false"`, and set to `audio_volume = "0.0"` (0 dB). These
+settings do not change the operating system's mixer or output device.
 
-Core downloads are extracted into native Node.js Buffers and written to new temporary
-files before atomic installation. On Windows, only that newly downloaded and validated
-core's `Zone.Identifier` stream is removed before publication. Missing streams are normal;
-other cleanup failures are reported through the download error UI. Existing manually
-installed cores are not unblocked. This follows the named-stream operation described by
+Core downloads are extracted into native Node.js Buffers and written to new
+temporary files before atomic installation. On Windows, only the newly downloaded
+and validated core's `Zone.Identifier` stream is removed before publication.
+Missing streams are normal; other cleanup failures appear in the download error
+UI. Existing manually installed cores are not unblocked. This follows the
+named-stream operation described in
 [Microsoft's Unblock-File documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/unblock-file).
-No PowerShell process or system security-policy change is needed. Cores remain excluded
-from electron-builder packages; this flow runs when the installed app downloads a core.
+No PowerShell process or system security-policy change is required. Cores remain
+excluded from electron-builder packages; this process runs when the installed
+application downloads a core.
 
 ## Legal Disclaimer
 
