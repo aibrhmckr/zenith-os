@@ -3,9 +3,29 @@ import { basename, dirname, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pathKey } from './platform.js'
 import { CONSOLE_EXTENSIONS } from '../../shared/consoles.js'
+/**
+ * Supported import extensions derived from the same registry used for scanning and file-picker
+ * filters.
+ */
 const extensions = new Set(Object.values(CONSOLE_EXTENSIONS).flat())
+/**
+ * Create a serialized import queue targeting the central games directory. Returned importer
+ * accepts source paths and resolves copied library paths without modifying originals.
+ *
+ * @param {string} gamesDirectory - Absolute central ROM directory; imported library copies are stored here.
+ */
 export function createGameImporter(gamesDirectory) {
+  /**
+   * Serial import barrier prevents two picker requests from racing while choosing numbered
+   * destination names.
+   */
   let queue = Promise.resolve()
+  /**
+   * Copy supported regular ROM files asynchronously, preserve PSP path hints, and choose
+   * nonconflicting names. Publish a complete temporary copy and always remove staging.
+   *
+   * @param {string[]} sources - User-selected ROM paths copied without changing originals.
+   */
   const copy = async (sources) => {
     await fs.promises.mkdir(gamesDirectory, { recursive: true })
     const imported = []
@@ -55,9 +75,24 @@ export function createGameImporter(gamesDirectory) {
     }
     return imported
   }
+  /**
+   * Enqueue a source-path batch after the previous import; a rejected batch must not poison subsequent imports.
+   *
+   * @param {*} sources - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+   */
   return (sources) => {
-    const result = queue.then(() => copy(sources))
-    queue = result.catch(() => {})
+    const result = queue.then(
+      /**
+       * Continue result after the preceding asynchronous stage resolves; the returned value or Promise feeds the same chain.
+       */
+      () => copy(sources)
+    )
+    queue = result.catch(
+      /**
+       * Handle the rejected stage of createGameImporter here so its failure follows this operation's fallback/error policy.
+       */
+      () => {}
+    )
     return result
   }
 }

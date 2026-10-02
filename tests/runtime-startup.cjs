@@ -55,6 +55,14 @@ app.once('browser-window-created', (_event, win) => {
   win.webContents.once('did-finish-load', async () => {
     try {
       const evaluate = (code) => win.webContents.executeJavaScript(code)
+      assert.equal(win.isFullScreen(), true, 'Dashboard starts in fullscreen console mode')
+      assert.equal(win.isKiosk(), true, 'Dashboard starts in kiosk mode')
+      assert.equal(win.autoHideMenuBar, true, 'Native menu bar stays hidden by default')
+      assert.deepEqual(
+        win.getContentBounds(),
+        win.getBounds(),
+        'Frameless window has no native title bar or borders around its content'
+      )
       for (let i = 0; i < 100 && !reachedCopy; i++) await new Promise((r) => setTimeout(r, 10))
       assert(reachedCopy, 'Window loads while runtime copy is still pending')
       assert.equal(dialogs.length, 0, 'No blocking initialization dialog')

@@ -1,5 +1,9 @@
 import fs from 'node:fs'
 import { join, relative, isAbsolute } from 'node:path'
+/**
+ * Only mandatory external-BIOS systems are gated. Folder components, accepted filename groups,
+ * and byte sizes are diagnostic rules, not cryptographic validation.
+ */
 export const BIOS_RULES = {
   PS2: {
     folder: ['pcsx2', 'bios'],
@@ -13,11 +17,27 @@ export const BIOS_RULES = {
   },
   Dreamcast: { folder: ['dc'], groups: [['dc_boot.bin']], sizes: [2 * 1024 * 1024] }
 }
+/**
+ * Resolve only a BIOS-gated platform into its system subdirectory; reject unsupported upload
+ * targets.
+ *
+ * @param {string} retroarchDir - Active writable RetroArch runtime directory shared by install, status, and launch.
+ * @param {string} system - Console ID from the shared platform registry.
+ */
 export const biosDirectory = (retroarchDir, system) => {
   if (!Object.hasOwn(BIOS_RULES, system))
     throw Error('This platform does not require a BIOS upload.')
   return join(retroarchDir, 'system', ...BIOS_RULES[system].folder)
 }
+/**
+ * Inspect actual BIOS filenames and sizes, applying PS1 region selection. HLE platforms are
+ * ready without a BIOS; this is not dump-content authentication.
+ *
+ * @param {string} retroarchDir - Active writable RetroArch runtime directory shared by install, status, and launch.
+ * @param {string} system - Console ID from the shared platform registry.
+ * @param {string} region - Optional detected game region, used for BIOS/artwork selection.
+ * @param {string} platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
+ */
 export function biosStatus(retroarchDir, system, region, platform = process.platform) {
   const rule = BIOS_RULES[system]
   if (!rule) return { required: false, ready: true, missing: [] }
@@ -26,11 +46,25 @@ export function biosStatus(retroarchDir, system, region, platform = process.plat
   try {
     files = fs
       .readdirSync(directory, { withFileTypes: true })
-      .filter((f) => f.isFile())
-      .map((f) => ({
-        name: platform === 'win32' || system === 'PS2' ? f.name.toLowerCase() : f.name,
-        size: fs.statSync(join(directory, f.name)).size
-      }))
+      .filter(
+        /**
+         * Retain only fs .readdirSync(directory, { withFileTypes: true }) entries satisfying biosStatus's local predicate; excluded values do not reach the next stage.
+         *
+         * @param {*} f - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (f) => f.isFile()
+      )
+      .map(
+        /**
+         * Project each fs .readdirSync(directory, { withFileTypes: true }) .filter((f) => f.isFile()) entry for biosStatus; preserve input ordering in the derived collection.
+         *
+         * @param {*} f - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (f) => ({
+          name: platform === 'win32' || system === 'PS2' ? f.name.toLowerCase() : f.name,
+          size: fs.statSync(join(directory, f.name)).size
+        })
+      )
   } catch {
     /* absent */
   }
@@ -48,19 +82,43 @@ export function biosStatus(retroarchDir, system, region, platform = process.plat
       : rule.groups
   const missing = groups
     .filter(
+      /**
+       * Retain only groups entries satisfying missing's local predicate; excluded values do not reach the next stage.
+       *
+       * @param {*} group - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
       (group) =>
         !files.some(
+          /**
+           * Short-circuit when any files entry meets missing's condition.
+           *
+           * @param {*} f - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
           (f) =>
             (group.includes(f.name) || (group.includes('*.bin') && f.name.endsWith('.bin'))) &&
             f.size > 0 &&
             (!rule.sizes || rule.sizes.includes(f.size))
         )
     )
-    .map((group) => group.join(' / '))
+    .map(
+      /**
+       * Project each groups .filter( (group) => !files.some( (f) => (group.includes(f.name) || (group.includes('*.bi entry for missing; preserve input ordering in the derived collection.
+       *
+       * @param {*} group - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
+      (group) => group.join(' / ')
+    )
   return { required: true, ready: !missing.length, missing, directory }
 }
 
 // Remove only the selected console's BIOS names, never the shared system directory.
+/**
+ * Resolve the real system path under RetroArch and unlink only this platform's matching BIOS
+ * entries, preserving unrelated files.
+ *
+ * @param {string} retroarchDir - Active writable RetroArch runtime directory shared by install, status, and launch.
+ * @param {string} system - Console ID from the shared platform registry.
+ */
 export async function deleteBios(retroarchDir, system) {
   const directory = biosDirectory(retroarchDir, system)
   if (!fs.existsSync(directory)) return

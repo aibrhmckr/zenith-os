@@ -1,3 +1,6 @@
+/* Console presentation contract: shared badges, modal focus rings, OSK, and responsive
+   dashboard geometry live here. Keep measured grid tracks in sync with useGridColumns;
+   decoration must not intercept pointer input or conceal the controller focus ring. */
 @import 'tailwindcss';
 
 .input-hint {

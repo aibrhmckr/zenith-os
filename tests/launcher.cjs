@@ -153,7 +153,16 @@ async function checkLauncher(window) {
       'audio_driver = "xaudio"',
       'audio_enable = "true"',
       'audio_mute_enable = "false"',
-      'audio_volume = "0.0"'
+      'audio_volume = "0.0"',
+      'input_menu_toggle_gamepad_combo = "0"',
+      'input_menu_toggle_btn = "nul"',
+      'input_menu_toggle = "nul"',
+      'input_menu_toggle_axis = "nul"',
+      'input_menu_toggle_mbtn = "nul"',
+      'input_hotkey_block_delay = "0"',
+      'auto_overrides_enable = "false"',
+      'input_enable_hotkey = "nul"',
+      'input_enable_hotkey_btn = "nul"'
     ])
       assert.equal(
         sessionConfig.split('\n').filter((line) => line === setting).length,

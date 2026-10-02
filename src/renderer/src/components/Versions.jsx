@@ -1,6 +1,13 @@
 import { useState } from 'react'
 
+/**
+ * Display the preload-exposed runtime versions from a stable snapshot. This template component
+ * is not mounted in the dashboard.
+ */
 function Versions() {
+  /**
+   * Snapshot of Electron, Chromium, and Node versions exposed by toolkit preload.
+   */
   const [versions] = useState(window.electron.process.versions)
 
   return (

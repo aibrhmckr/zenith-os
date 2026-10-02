@@ -137,18 +137,25 @@ async function checkWindow(window) {
   assert.equal(new Set(games.map((game) => game.id)).size, games.length)
   await reload()
   await waitFor(`document.querySelectorAll('[data-game-card]').length === ${games.length}`)
-  assert.equal(
-    await evaluate(
-      "getComputedStyle(document.querySelector('[data-game-card]').parentElement).gridTemplateColumns.split(' ').length"
-    ),
-    8
-  )
+  // Fullscreen uses the monitor width; validate responsive capacity rather than
+  // assuming the old 1440px window always contains eight columns.
+  const { columns, availableWidth } = await evaluate(`(() => {
+    const grid = document.querySelector('[data-game-card]').parentElement;
+    const style = getComputedStyle(grid);
+    return {
+      columns: style.gridTemplateColumns.split(' ').length,
+      availableWidth: grid.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+    };
+  })()`)
+  assert.equal(columns, Math.max(1, Math.floor((availableWidth + 16) / (144 + 16))))
   const titles = games.map((game) => game.title)
   assert.equal(await selected(), titles[0])
   await key('ArrowRight')
   await waitFor(`document.querySelector('h1').textContent === ${JSON.stringify(titles[1])}`)
   await key('ArrowDown')
-  await waitFor(`document.querySelector('h1').textContent === ${JSON.stringify(titles[9])}`)
+  await waitFor(
+    `document.querySelector('h1').textContent === ${JSON.stringify(titles[1 + columns])}`
+  )
   await key('ArrowUp')
   await waitFor(`document.querySelector('h1').textContent === ${JSON.stringify(titles[1])}`)
   await key('ArrowLeft')
@@ -233,7 +240,7 @@ async function checkWindow(window) {
     "document.body.textContent.includes('The library or cache could not be read. Check folder permissions.')"
   )
   console.log(
-    'PASS: folder creation, all ROM extensions, covers, IPC, eight-column grid, keyboard, filters, simulated gamepad, empty and error states'
+    'PASS: folder creation, all ROM extensions, covers, IPC, responsive fullscreen grid, keyboard, filters, simulated gamepad, empty and error states'
   )
 }
 

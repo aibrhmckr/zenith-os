@@ -4,7 +4,14 @@ import { basename, extname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 
+/**
+ * Runtime-only URL-to-file capabilities registered by Main; never resolve an arbitrary
+ * renderer-supplied path.
+ */
 const allowed = new Map()
+/**
+ * Content types supported by local media playback, including application WAV effects.
+ */
 const TYPES = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -12,10 +19,22 @@ const TYPES = {
   '.mp4': 'video/mp4',
   '.wav': 'audio/wav'
 }
+/**
+ * Remove protocol capabilities for files below a deleted game cache so stale renderer URLs stop
+ * resolving.
+ *
+ * @param {string} directory - Validated local destination or directory to inspect.
+ */
 export function revokeMediaDirectory(directory) {
   for (const [url, file] of allowed)
     if (file.startsWith(directory + '/') || file.startsWith(directory + '\\')) allowed.delete(url)
 }
+/**
+ * Register a main-process file path and return an opaque game-media URL; null input stays null.
+ * The renderer never receives arbitrary filesystem access.
+ *
+ * @param {string} file - Local file path, except ranking callbacks where it is an Archive file metadata entry.
+ */
 export function mediaUrl(file) {
   if (!file) return null
   const key = createHash('sha256').update(pathToFileURL(file).href).digest('hex')
@@ -25,6 +44,12 @@ export function mediaUrl(file) {
 }
 
 // Support Chromium's video/audio byte-range requests without buffering whole files.
+/**
+ * Serve only registered GET/HEAD requests, using streaming byte ranges for audio/video seeking.
+ * Return 404 for missing files and 416 for invalid ranges.
+ *
+ * @param {Object} request - Launch payload or protocol Request, as specified by the surrounding handler.
+ */
 export function serveMedia(request) {
   const file = allowed.get(request.url)
   if (!file || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })

@@ -17,8 +17,17 @@ fs.writeFileSync(path.join(retro, 'cores', 'mgba_libretro.dll'), coreBinary('mgb
 app.getAppPath = () => root
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
-for (const action of ['show', 'hide', 'restore', 'focus', 'setAlwaysOnTop'])
-  BrowserWindow.prototype[action] = () => {}
+const windowActions = []
+for (const action of [
+  'show',
+  'hide',
+  'restore',
+  'focus',
+  'setAlwaysOnTop',
+  'setKiosk',
+  'setFullScreen'
+])
+  BrowserWindow.prototype[action] = (...args) => windowActions.push([action, ...args])
 let quits = 0
 app.quit = () => {
   quits++
@@ -51,6 +60,14 @@ cp.spawn = (command, args, options) => {
   if (command === 'powershell.exe') {
     bridge = child
     assert.equal(options.windowsHide, true)
+    assert.equal(args.at(-2), '-EncodedCommand')
+    assert.equal(
+      Buffer.from(args.at(-1), 'base64').toString('utf16le'),
+      fs
+        .readFileSync(path.join(__dirname, '../resources/gamepad-bridge.ps1'), 'utf8')
+        .replace('param([int]$EmulatorPid)', '$EmulatorPid = 7007'),
+      'The bundled Windows input bridge must target the active emulator PID'
+    )
   } else {
     emulator = child
     child.pid = 7007
@@ -161,22 +178,77 @@ async function run(window) {
   await wait("document.querySelector('[data-launch-game]').disabled")
   for (let i = 0; i < 100 && !bridge; i++) await delay(20)
   assert(bridge)
-  assert.deepEqual(JSON.parse(commands[0]), { pad: [4, 5], keys: [81, 69] })
+  const handle = window.getNativeWindowHandle()
+  const nativeTarget = {
+    zenithPid: process.pid,
+    zenithWindow:
+      handle.length === 8 ? handle.readBigUInt64LE().toString() : String(handle.readUInt32LE())
+  }
+  assert.deepEqual(JSON.parse(commands[0]), { pad: [4, 5], keys: [81, 69], ...nativeTarget })
   const config = fs.readFileSync(spawnArgs.at(-1), 'utf8')
   for (const line of [
     'input_menu_toggle_gamepad_combo = "0"',
     'input_menu_toggle_btn = "nul"',
     'input_menu_toggle = "nul"',
+    'input_menu_toggle_axis = "nul"',
+    'input_menu_toggle_mbtn = "nul"',
+    'input_hotkey_block_delay = "0"',
+    'auto_overrides_enable = "false"',
+    'input_enable_hotkey = "nul"',
+    'input_enable_hotkey_btn = "nul"',
     'input_exit_emulator = "nul"'
   ])
     assert(config.includes(line))
   await ev("window.electronAPI.saveHotkeys({gamepad:[8,9],keyboard:['KeyZ','KeyX']})")
-  assert.deepEqual(JSON.parse(commands.at(-1)), { pad: [8, 9], keys: [90, 88] })
+  assert.deepEqual(JSON.parse(commands.at(-1)), { pad: [8, 9], keys: [90, 88], ...nativeTarget })
+  const beforeMenu = windowActions.length
   bridge.stdout.emit('data', 'ho')
+  assert.equal(windowActions.length, beforeMenu, 'Wait for a complete bridge message')
   bridge.stdout.emit('data', 'me\n')
   await wait("!!document.querySelector('[data-console-modal=session]')")
+  assert.deepEqual(windowActions.slice(beforeMenu), [
+    ['setKiosk', true],
+    ['setFullScreen', true],
+    ['setAlwaysOnTop', true, 'screen-saver'],
+    ['show'],
+    ['focus']
+  ])
+  assert.equal(commands.at(-1), 'focus-zenith\n')
+  await wait("document.activeElement?.hasAttribute('data-initial-focus')")
+  await key('ArrowDown')
+  assert.equal(
+    await ev("document.activeElement===document.querySelectorAll('[data-session-option]')[1]"),
+    true
+  )
+  await ev("document.activeElement.blur();window.dispatchEvent(new Event('focus'));undefined")
+  await wait("document.activeElement===document.querySelectorAll('[data-session-option]')[1]")
+  await press(13)
+  assert.equal(await ev("document.activeElement.hasAttribute('data-quit-app')"), true)
+  await press(12)
+  assert.equal(
+    await ev("document.activeElement===document.querySelectorAll('[data-session-option]')[1]"),
+    true
+  )
+  await key('ArrowUp')
+  assert.equal(await ev("document.activeElement.hasAttribute('data-initial-focus')"), true)
   assert(shortcuts.has('F10'))
   assert(shortcuts.has('Escape'))
+  const beforeDuplicate = windowActions.length
+  bridge.stdout.emit('data', 'home\n')
+  shortcuts.get('F10')()
+  assert.equal(windowActions.length, beforeDuplicate, 'An open overlay ignores repeated hotkeys')
+  await press(1)
+  await wait("!document.querySelector('[data-console-modal=session]')")
+  assert.deepEqual(windowActions.slice(beforeDuplicate), [['setAlwaysOnTop', false], ['hide']])
+  assert.equal(commands.at(-1), 'resume\n', 'The native bridge must restore emulator focus')
+  assert(!emulator.killed, 'Resuming preserves the running game')
+  bridge.stdout.emit('data', 'home\r\n')
+  await wait("!!document.querySelector('[data-console-modal=session]')")
+  assert.deepEqual(windowActions.slice(-3), [
+    ['setAlwaysOnTop', true, 'screen-saver'],
+    ['show'],
+    ['focus']
+  ])
   await click('[data-quit-app]')
   assert.equal(quits, 1)
   assert(emulator.killed)

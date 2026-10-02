@@ -17,6 +17,15 @@ import CoreBrowser from './components/CoreBrowser'
 import SystemSettings from './components/SystemSettings'
 import InputHint, { KeyBadge } from './components/InputHint'
 
+/**
+ * Move within the measured responsive grid, clamp the final partial row, and keep upward input
+ * on the first row inside the library.
+ *
+ * @param {number} index - Zero-based selection, button, or page index.
+ * @param {string} direction - Navigation direction: up, down, left, or right.
+ * @param {number} total - Number of items in the current filtered grid.
+ * @param {number} columns - Actual rendered grid column count.
+ */
 const moveIndex = (index, direction, total, columns) => {
   if (!total) return 0
   if (direction === 'right') return Math.min(total - 1, index + 1)
@@ -26,28 +35,64 @@ const moveIndex = (index, direction, total, columns) => {
     ? Math.min(total - 1, index + columns)
     : index
 }
+/**
+ * Compose library, input, preview, and modal state for the fullscreen dashboard. Route
+ * controller frames exclusively to the topmost dialog before dashboard actions.
+ */
 export default function App() {
   const { t } = useI18n()
   const { games, loading, error, scanning, progress, warning, refresh, removeFromState } =
     useGameLibrary()
   const { preferences, togglePreference, saveHotkeys } = usePreferences()
   const { play: playSound } = useSoundEffects(preferences.menuSounds)
+  /**
+   * Rendered grid used for measuring column count and keeping gamepad movement aligned with
+   * responsive CSS.
+   */
   const gridRef = useRef(null)
   const columns = useGridColumns(gridRef)
   const clock = useClock()
+  /**
+   * Stateful chord recognizer persists across renders and defers individual button actions until
+   * release.
+   */
   const hotkeyInput = useRef(createGamepadHotkey())
+  /**
+   * Requested card index and console choice. focusedIndex clamps selection when filters or library
+   * contents shrink.
+   */
   const [currentIndex, setCurrentIndex] = useState(0),
     [consoleChoice, setSelectedConsole] = useState('ALL')
+  /**
+   * Committed search text, OSK draft text, and visibility are separate so OSK typing cannot move
+   * background card focus.
+   */
   const [searchQuery, setSearchQuery] = useState(''),
     [searchDraft, setSearchDraft] = useState(''),
     [oskOpen, setOskOpen] = useState(false)
+  /**
+   * The guide target and typed panel determine exclusive input ownership; busy locks asynchronous
+   * panel actions.
+   */
   const [guideGame, setGuideGame] = useState(null),
     [panel, setPanel] = useState(null),
     [busy, setBusy] = useState(false)
+  /**
+   * Success and failure messages are cleared at the start of each operation rather than leaking
+   * into another panel.
+   */
   const [notice, setNotice] = useState(''),
     [operationError, setOperationError] = useState('')
+  /**
+   * Launch phase/title drives animation and preview gating; previewEnabled also tracks pointer
+   * intent.
+   */
   const [launchState, setLaunchState] = useState(null),
     [previewEnabled, setPreviewEnabled] = useState(true)
+  /**
+   * DOM focus targets and synchronous guards survive renders: selected card/search, active game,
+   * launch/OSK locks, and return targets for modal dismissal.
+   */
   const selectedCardRef = useRef(null),
     searchInputRef = useRef(null),
     activeGameRef = useRef(null),
@@ -56,21 +101,47 @@ export default function App() {
     returnGame = useRef(null),
     panelReturnCard = useRef(null),
     oskRef = useRef(false)
+  /**
+   * Only platforms present in the library plus ALL appear in the filter; this list also drives
+   * shoulder-button cycling.
+   */
   const consoles = useMemo(
     () => [
       'ALL',
-      ...Object.keys(CONSOLE_EXTENSIONS).filter((system) =>
-        games.some((game) => game.systemShort === system)
+      ...Object.keys(CONSOLE_EXTENSIONS).filter(
+        /**
+         * Retain only Object.keys(CONSOLE_EXTENSIONS) entries satisfying consoles's local predicate; excluded values do not reach the next stage.
+         *
+         * @param {*} system - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (system) =>
+          games.some(
+            /**
+             * Short-circuit when any games entry meets consoles's condition.
+             *
+             * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+             */
+            (game) => game.systemShort === system
+          )
       )
     ],
     [games]
   )
   const selectedConsole = consoles.includes(consoleChoice) ? consoleChoice : 'ALL'
   const filteredGames = games.filter(
+    /**
+     * Retain only games entries satisfying filteredGames's local predicate; excluded values do not reach the next stage.
+     *
+     * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+     */
     (game) =>
       (selectedConsole === 'ALL' || game.systemShort === selectedConsole) &&
       game.title.toLowerCase().includes(searchQuery.toLowerCase())
   )
+  /**
+   * Safe selected index after filtering; an empty library still uses zero without dereferencing a
+   * missing game.
+   */
   const focusedIndex = Math.min(currentIndex, Math.max(0, filteredGames.length - 1))
   const activeGame = filteredGames[focusedIndex] || null
   const {
@@ -89,9 +160,16 @@ export default function App() {
       !oskOpen,
     preferences.previewSound
   )
+  /**
+   * Keep the synchronous active-game reference current for stable launch/guide callbacks.
+   */
   useEffect(() => {
     activeGameRef.current = activeGame
   }, [activeGame])
+  /**
+   * Scroll the selected card into view and retain card focus after grid width or selection
+   * changes.
+   */
   useEffect(() => {
     selectedCardRef.current?.scrollIntoView({
       block: 'nearest',
@@ -100,17 +178,31 @@ export default function App() {
     if (document.activeElement?.matches('[data-game-card]'))
       selectedCardRef.current?.focus({ preventScroll: true })
   }, [activeGame?.id, columns])
+  /**
+   * Restore card/search focus after the OSK is removed from the modal top layer.
+   */
   useLayoutEffect(() => {
     if (!oskOpen && restoreFocus.current) {
       restoreFocus.current = false
       ;(selectedCardRef.current || searchInputRef.current)?.focus({ preventScroll: true })
     }
   }, [oskOpen])
+  /**
+   * Capture the originating game card, stop previews, clear operation messages, and open a typed
+   * console panel.
+   *
+   * @param {*} value - Input value being normalized, displayed, or committed by this helper.
+   */
   const openPanel = useCallback(
     (value) => {
       if (value.game) {
         panelReturnCard.current =
           Array.from(document.querySelectorAll('[data-game-card]')).find(
+            /**
+             * Select the first matching Array.from(document.querySelectorAll('[data-game-card]')) entry for openPanel; absence is handled by the caller's fallback.
+             *
+             * @param {*} card - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+             */
             (card) => card.dataset.gameId === value.game.id
           ) || selectedCardRef.current
       } else if (!document.querySelector('dialog[open]'))
@@ -122,6 +214,10 @@ export default function App() {
     },
     [stopPreview]
   )
+  /**
+   * Dismiss an idle panel or return to its parent screen; closing a session overlay also resumes
+   * the emulator.
+   */
   const closePanel = () => {
     if (busy) return
     if (panel?.type === 'coreBrowser') {
@@ -143,6 +239,9 @@ export default function App() {
     if (panel?.type === 'session') void window.electronAPI.resumeSession()
     setPanel(null)
   }
+  /**
+   * Return focus to the originating card after all blocking panels close.
+   */
   useLayoutEffect(() => {
     if (!panel && !guideGame && !oskOpen) {
       const card = panelReturnCard.current?.isConnected
@@ -152,12 +251,25 @@ export default function App() {
       card?.focus({ preventScroll: true })
     }
   }, [panel, guideGame, oskOpen])
+  /**
+   * Previous drawer-open state prevents toggle SFX from replaying on unrelated renders.
+   */
   const priorGuide = useRef(false)
+  /**
+   * Play one toggle sound per guide open/close transition.
+   */
   useEffect(() => {
     if (!!guideGame !== priorGuide.current) playSound('toggle')
     priorGuide.current = !!guideGame
   }, [guideGame, playSound])
+  /**
+   * Close the selected game's guide; the focus-restoration effect returns control to the
+   * dashboard.
+   */
   const closeGuide = useCallback(() => setGuideGame(null), [])
+  /**
+   * Toggle the guide only when a game is selected and no launch, OSK, or console modal owns input.
+   */
   const toggleGuide = useCallback(() => {
     if (guideGame) {
       setGuideGame(null)
@@ -173,24 +285,74 @@ export default function App() {
     stopPreview()
     setGuideGame(activeGameRef.current)
   }, [guideGame, stopPreview])
+  /**
+   * Subscribe to Main session events and release all three subscriptions on unmount.
+   */
   useEffect(() => {
-    const a = window.electronAPI.onGameStarted(() =>
-      setLaunchState((state) => (state ? { ...state, phase: 'running' } : null))
+    const a = window.electronAPI.onGameStarted(
+      /**
+       * Consume onGameStarted application payloads in a; the enclosing effect disposes the IPC subscription on unmount.
+       */
+      () =>
+        setLaunchState(
+          /**
+           * Compute a's next React state from the latest queued value, avoiding stale render snapshots.
+           *
+           * @param {*} state - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
+          (state) => (state ? { ...state, phase: 'running' } : null)
+        )
     )
-    const b = window.electronAPI.onGameStopped(() => {
-      setLaunchState(null)
-      setPanel((p) => (p?.type === 'session' ? null : p))
-    })
-    const c = window.electronAPI.onSessionMenu((open) => {
-      if (open) setPanel({ type: 'session' })
-      else setPanel((p) => (p?.type === 'session' ? null : p))
-    })
+    const b = window.electronAPI.onGameStopped(
+      /**
+       * Consume onGameStopped application payloads in b; the enclosing effect disposes the IPC subscription on unmount.
+       */
+      () => {
+        setLaunchState(null)
+        setPanel(
+          /**
+           * Compute b's next React state from the latest queued value, avoiding stale render snapshots.
+           *
+           * @param {*} p - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
+          (p) => (p?.type === 'session' ? null : p)
+        )
+      }
+    )
+    const c = window.electronAPI.onSessionMenu(
+      /**
+       * Consume onSessionMenu application payloads in c; the enclosing effect disposes the IPC subscription on unmount.
+       *
+       * @param {*} open - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
+      (open) => {
+        if (open) setPanel({ type: 'session' })
+        else
+          setPanel(
+            /**
+             * Compute c's next React state from the latest queued value, avoiding stale render snapshots.
+             *
+             * @param {*} p - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+             */
+            (p) => (p?.type === 'session' ? null : p)
+          )
+      }
+    )
+    /**
+     * Release the listeners, timers, or focus ownership acquired by App's effect before it reruns or unmounts.
+     */
     return () => {
       a()
       b()
       c()
     }
   }, [])
+  /**
+   * Play the launch effect and await the 500-ms preview fade before invoking Main. Convert
+   * missing-core/BIOS results to recoverable panels and release the launch lock in finally.
+   *
+   * @param {Object} game - Library game record, including identity, platform, and available local media.
+   */
   const launch = useCallback(
     async (game = activeGameRef.current) => {
       if (!game || launchBusyRef.current) return
@@ -221,6 +383,13 @@ export default function App() {
     },
     [fadeOut, playSound, t]
   )
+  /**
+   * Serialize a panel operation, expose cancellation/errors, and await its success continuation
+   * before unlocking controls.
+   *
+   * @param {Function|string} action - Asynchronous IPC action, or a BIOS operation selector in useBiosManager.
+   * @param {Function} after - Optional success continuation awaited before controls are unlocked.
+   */
   const run = async (action, after) => {
     if (busy) return
     setBusy(true)
@@ -237,27 +406,57 @@ export default function App() {
       setBusy(false)
     }
   }
+  /**
+   * Invoke the native importer, then close the panel and rescan the central library without
+   * forcing fresh media requests.
+   */
   const addGames = () =>
     run(
+      /**
+       * Perform one addGames operation or its success continuation under the parent's busy/error handling.
+       */
       () => window.electronAPI.addGames(),
+      /**
+       * Perform one addGames operation or its success continuation under the parent's busy/error handling.
+       */
       async () => {
         setPanel(null)
         setCurrentIndex(0)
         await refresh(false)
       }
     )
+  /**
+   * Install the panel's missing platform core and retry the pending game launch only after a
+   * successful installation.
+   */
   const install = () =>
     run(
+      /**
+       * Perform one install operation or its success continuation under the parent's busy/error handling.
+       */
       () => window.electronAPI.installCore(panel.platform),
+      /**
+       * Perform one install operation or its success continuation under the parent's busy/error handling.
+       */
       () => {
         const game = panel.game
         setPanel(null)
         if (game) void launch(game)
       }
     )
+  /**
+   * Execute the already-confirmed deletion, remove its React record, and refresh selection/library
+   * state after Main finishes cleanup.
+   */
   const removeGame = () =>
     run(
+      /**
+       * Perform one removeGame operation or its success continuation under the parent's busy/error handling.
+       */
       () => window.electronAPI.deleteGame(panel.game.gameId),
+      /**
+       * Perform one removeGame operation or its success continuation under the parent's busy/error handling.
+       */
       async () => {
         removeFromState(panel.game.gameId)
         setPanel(null)
@@ -265,6 +464,12 @@ export default function App() {
         await refresh(false)
       }
     )
+  /**
+   * Ignore background navigation while a modal, keyboard, or launch owns input; move the selected
+   * card and play navigation feedback only on actual movement.
+   *
+   * @param {string} direction - Navigation direction: up, down, left, or right.
+   */
   const navigate = useCallback(
     (direction) => {
       if (launchBusyRef.current || oskRef.current || document.querySelector('dialog[open]')) return
@@ -276,13 +481,30 @@ export default function App() {
     },
     [focusedIndex, filteredGames.length, columns, playSound]
   )
+  /**
+   * Cycle through consoles represented in the library and reset card selection to the first
+   * filtered result.
+   *
+   * @param {number} step - Signed relative movement, normally -1 or +1.
+   */
   const changeConsole = (step) => {
     setSelectedConsole(
+      /**
+       * Compute changeConsole's next React state from the latest queued value, avoiding stale render snapshots.
+       *
+       * @param {*} system - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
       (system) => consoles[(consoles.indexOf(system) + step + consoles.length) % consoles.length]
     )
     setCurrentIndex(0)
     playSound('navigate')
   }
+  /**
+   * Open the OSK only for explicit gamepad search, preserving the selected game and a draft query
+   * for focus restoration.
+   *
+   * @param {string} inputMode - Last active input device; only gamepad may open the OSK.
+   */
   const openKeyboard = (inputMode) => {
     if (inputMode !== 'gamepad' || oskRef.current || launchBusyRef.current) return
     returnGame.current = activeGame?.id
@@ -291,9 +513,18 @@ export default function App() {
     stopPreview()
     setOskOpen(true)
   }
+  /**
+   * Commit the search draft, choose the prior game when still present, and restore card/input
+   * focus after the OSK unmounts.
+   */
   const closeKeyboard = () => {
     document.querySelector('[data-osk]')?.close()
     const results = games.filter(
+      /**
+       * Retain only games entries satisfying results's local predicate; excluded values do not reach the next stage.
+       *
+       * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
       (game) =>
         (selectedConsole === 'ALL' || game.systemShort === selectedConsole) &&
         game.title.toLowerCase().includes(searchDraft.toLowerCase())
@@ -302,18 +533,38 @@ export default function App() {
     setCurrentIndex(
       Math.max(
         0,
-        results.findIndex((game) => game.id === returnGame.current)
+        results.findIndex(
+          /**
+           * Locate the matching results entry by index so closeKeyboard can maintain selection without retaining a stale DOM reference.
+           *
+           * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
+          (game) => game.id === returnGame.current
+        )
       )
     )
     oskRef.current = false
     restoreFocus.current = true
     setOskOpen(false)
   }
+  /**
+   * Leave the physical search input and return DOM focus to the selected card.
+   */
   const goBack = () => {
     searchInputRef.current?.blur()
     selectedCardRef.current?.focus()
   }
+  /**
+   * Bind dashboard keyboard actions with the latest selection and callbacks; remove the listener
+   * before rebinding.
+   */
   useEffect(() => {
+    /**
+     * Handle dashboard keyboard shortcuts only outside text fields and dialogs; prevent native key
+     * behavior when a dashboard action consumes the event.
+     *
+     * @param {Object} event - Electron or DOM event associated with this operation.
+     */
     const input = (event) => {
       if (
         document.querySelector('dialog[open]') ||
@@ -369,6 +620,11 @@ export default function App() {
         event.preventDefault()
         const step = event.key === 'PageDown' ? 1 : -1
         setSelectedConsole(
+          /**
+           * Compute input's next React state from the latest queued value, avoiding stale render snapshots.
+           *
+           * @param {*} system - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
           (system) =>
             consoles[(consoles.indexOf(system) + step + consoles.length) % consoles.length]
         )
@@ -376,11 +632,24 @@ export default function App() {
       }
     }
     window.addEventListener('keydown', input)
+    /**
+     * Release the listeners, timers, or focus ownership acquired by App's effect before it reruns or unmounts.
+     */
     return () => window.removeEventListener('keydown', input)
   }, [launch, navigate, openPanel, toggleGuide, togglePreference, consoles])
+  /**
+   * Capture exit chords before ordinary shortcuts; clear held keys on blur and remove all
+   * listeners on cleanup.
+   */
   useEffect(() => {
     const held = new Set()
     let fired = false
+    /**
+     * Track held physical keys in capture phase; trigger one Zenith menu per chord and consume
+     * conflicting individual shortcuts.
+     *
+     * @param {Object} event - Electron or DOM event associated with this operation.
+     */
     const down = (event) => {
       if (document.querySelector('dialog[open]') || event.target.closest('input,textarea,select'))
         return
@@ -389,7 +658,15 @@ export default function App() {
       const pair = preferences.hotkeys.keyboard
       const matches =
         ['Escape', 'F10'].includes(code) ||
-        (pair.length === 2 && pair.every((key) => held.has(key)))
+        (pair.length === 2 &&
+          pair.every(
+            /**
+             * Require every pair entry to satisfy matches's invariant before continuing.
+             *
+             * @param {*} key - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+             */
+            (key) => held.has(key)
+          ))
       if (matches || pair.includes(code)) {
         event.preventDefault()
         event.stopImmediatePropagation()
@@ -400,10 +677,18 @@ export default function App() {
         else openPanel({ type: 'mainMenu' })
       }
     }
+    /**
+     * Release a held physical key and rearm combination detection after keyup.
+     *
+     * @param {Object} event - Electron or DOM event associated with this operation.
+     */
     const up = (event) => {
       held.delete(keyboardCode(event))
       fired = false
     }
+    /**
+     * Clear held keys on window blur so a lost keyup cannot leave the exit combination stuck.
+     */
     const reset = () => {
       held.clear()
       fired = false
@@ -411,85 +696,100 @@ export default function App() {
     window.addEventListener('keydown', down, true)
     window.addEventListener('keyup', up, true)
     window.addEventListener('blur', reset)
+    /**
+     * Release the listeners, timers, or focus ownership acquired by App's effect before it reruns or unmounts.
+     */
     return () => {
       window.removeEventListener('keydown', down, true)
       window.removeEventListener('keyup', up, true)
       window.removeEventListener('blur', reset)
     }
   }, [preferences.hotkeys, openPanel])
-  const { mode, controller } = useController((frame) => {
-    const surface = Array.from(document.querySelectorAll('dialog[open]')).at(-1)
-    const chord = hotkeyInput.current(frame, preferences.hotkeys.gamepad, Boolean(surface))
-    const hit = chord.hit
-    const directionButton = { up: 12, down: 13, left: 14, right: 15 }[frame.move]
-    const releasedDirection = Object.entries({ up: 12, down: 13, left: 14, right: 15 }).find(
-      ([, index]) => preferences.hotkeys.gamepad.includes(index) && hit(index)
-    )?.[0]
-    const move =
-      releasedDirection ||
-      (preferences.hotkeys.gamepad.includes(directionButton) ? null : frame.move)
-    if (surface) {
-      surface.dispatchEvent(new CustomEvent('controller-input', { detail: frame }))
-      return
+  const { mode, controller } = useController(
+    /**
+     * Route one normalized controller frame to the topmost modal, exit chord, or dashboard action in that order; returning early prevents background input leakage.
+     *
+     * @param {*} frame - Normalized controller frame with edge helpers, buttons, axes, and timestamp.
+     */
+    (frame) => {
+      const surface = Array.from(document.querySelectorAll('dialog[open]')).at(-1)
+      const chord = hotkeyInput.current(frame, preferences.hotkeys.gamepad, Boolean(surface))
+      const hit = chord.hit
+      const directionButton = { up: 12, down: 13, left: 14, right: 15 }[frame.move]
+      const releasedDirection = Object.entries({ up: 12, down: 13, left: 14, right: 15 }).find(
+        /**
+         * Select the first matching Object.entries({ up: 12, down: 13, left: 14, right: 15 }) entry for releasedDirection; absence is handled by the caller's fallback.
+         *
+         * @param {*} input1 - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        ([, index]) => preferences.hotkeys.gamepad.includes(index) && hit(index)
+      )?.[0]
+      const move =
+        releasedDirection ||
+        (preferences.hotkeys.gamepad.includes(directionButton) ? null : frame.move)
+      if (surface) {
+        surface.dispatchEvent(new CustomEvent('controller-input', { detail: frame }))
+        return
+      }
+      if (chord.triggered || frame.hit(16)) {
+        if (launchBusyRef.current) void window.electronAPI.showSessionMenu()
+        else openPanel({ type: 'mainMenu' })
+        return
+      }
+      if (launchBusyRef.current || oskRef.current || guideGame || panel) return
+      if (hit(2)) {
+        openKeyboard(frame.inputMode)
+        return
+      }
+      if (hit(3) && activeGame) {
+        openPanel({ type: 'options', game: activeGame })
+        return
+      }
+      if (hit(6)) {
+        document.querySelector('[data-refresh-library]')?.click()
+        return
+      }
+      if (hit(7)) {
+        playSound('toggle')
+        togglePreference('previewSound')
+        return
+      }
+      if (hit(8)) {
+        openPanel({ type: 'filter' })
+        return
+      }
+      if (hit(9)) {
+        openPanel({ type: 'settings' })
+        return
+      }
+      if (hit(10) && activeGame) {
+        openPanel({ type: 'delete', game: activeGame })
+        return
+      }
+      if (hit(11)) {
+        void addGames()
+        return
+      }
+      if (hit(1)) {
+        goBack()
+        return
+      }
+      if (hit(4) || hit(5)) {
+        changeConsole(hit(5) ? 1 : -1)
+        return
+      }
+      if (document.activeElement === searchInputRef.current) {
+        if (hit(0)) openKeyboard(frame.inputMode)
+        else if (move === 'down') goBack()
+        return
+      }
+      if (hit(0)) {
+        void launch()
+        return
+      }
+      if (move) navigate(move)
     }
-    if (chord.triggered || frame.hit(16)) {
-      if (launchBusyRef.current) void window.electronAPI.showSessionMenu()
-      else openPanel({ type: 'mainMenu' })
-      return
-    }
-    if (launchBusyRef.current || oskRef.current || guideGame || panel) return
-    if (hit(2)) {
-      openKeyboard(frame.inputMode)
-      return
-    }
-    if (hit(3) && activeGame) {
-      openPanel({ type: 'options', game: activeGame })
-      return
-    }
-    if (hit(6)) {
-      document.querySelector('[data-refresh-library]')?.click()
-      return
-    }
-    if (hit(7)) {
-      playSound('toggle')
-      togglePreference('previewSound')
-      return
-    }
-    if (hit(8)) {
-      openPanel({ type: 'filter' })
-      return
-    }
-    if (hit(9)) {
-      openPanel({ type: 'settings' })
-      return
-    }
-    if (hit(10) && activeGame) {
-      openPanel({ type: 'delete', game: activeGame })
-      return
-    }
-    if (hit(11)) {
-      void addGames()
-      return
-    }
-    if (hit(1)) {
-      goBack()
-      return
-    }
-    if (hit(4) || hit(5)) {
-      changeConsole(hit(5) ? 1 : -1)
-      return
-    }
-    if (document.activeElement === searchInputRef.current) {
-      if (hit(0)) openKeyboard(frame.inputMode)
-      else if (move === 'down') goBack()
-      return
-    }
-    if (hit(0)) {
-      void launch()
-      return
-    }
-    if (move) navigate(move)
-  })
+  )
   return (
     <InputContext.Provider value={mode}>
       <div data-input-mode={mode} className="zenith-shell">
@@ -539,7 +839,14 @@ export default function App() {
                 )}
               </span>
             )}
-            <button onClick={() => openPanel({ type: 'settings' })}>
+            <button
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => openPanel({ type: 'settings' })
+              }
+            >
               <InputHint keyboard="Menu" gamepad="Menu">
                 {t('settings')}
               </InputHint>
@@ -586,7 +893,12 @@ export default function App() {
             <button
               data-console-filter
               aria-controls="console-filters"
-              onClick={() => openPanel({ type: 'filter' })}
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => openPanel({ type: 'filter' })
+              }
               className="console-button"
             >
               <span>{selectedConsole === 'ALL' ? t('all') : selectedConsole}</span>
@@ -610,26 +922,50 @@ export default function App() {
                 aria-label={t('search')}
                 placeholder={t('search')}
                 value={searchQuery}
-                onFocus={() => {
-                  stopPreview()
-                  setPreviewEnabled(false)
-                }}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value)
-                  setCurrentIndex(0)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape' || e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    goBack()
+                onFocus={
+                  /**
+                   * Handle onFocus on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   */
+                  () => {
+                    stopPreview()
+                    setPreviewEnabled(false)
                   }
-                }}
+                }
+                onChange={
+                  /**
+                   * Handle onChange on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   *
+                   * @param {*} e - DOM event from this control.
+                   */
+                  (e) => {
+                    setSearchQuery(e.target.value)
+                    setCurrentIndex(0)
+                  }
+                }
+                onKeyDown={
+                  /**
+                   * Handle onKeyDown on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   *
+                   * @param {*} e - DOM event from this control.
+                   */
+                  (e) => {
+                    if (e.key === 'Escape' || e.key === 'ArrowDown') {
+                      e.preventDefault()
+                      goBack()
+                    }
+                  }
+                }
                 className="bg-transparent outline-none placeholder:text-white/40"
               />
               <button
                 data-search-trigger
                 aria-label={t('search')}
-                onClick={() => searchInputRef.current?.focus()}
+                onClick={
+                  /**
+                   * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   */
+                  () => searchInputRef.current?.focus()
+                }
               >
                 <KeyBadge keyboard="/" gamepad="X" />
               </button>
@@ -646,7 +982,12 @@ export default function App() {
             <button
               data-refresh-library
               disabled={scanning || !!launchState}
-              onClick={() => void refresh()}
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => void refresh()
+              }
               className="console-button"
             >
               <KeyBadge keyboard="R" gamepad="LT" />
@@ -661,72 +1002,112 @@ export default function App() {
             </p>
           )}
           <div ref={gridRef} className="poster-grid">
-            {filteredGames.map((game, index) => (
-              <button
-                key={game.id}
-                data-game-card
-                data-game-id={game.id}
-                aria-label={game.title}
-                aria-pressed={index === focusedIndex}
-                tabIndex={index === focusedIndex ? 0 : -1}
-                ref={index === focusedIndex ? selectedCardRef : null}
-                onFocus={() => {
-                  if (oskRef.current) return
-                  setCurrentIndex(index)
-                  setPreviewEnabled(true)
-                  restartPreview()
-                }}
-                onMouseEnter={() => {
-                  if (launchBusyRef.current || oskRef.current) return
-                  if (index !== focusedIndex) playSound('navigate')
-                  setCurrentIndex(index)
-                  setPreviewEnabled(true)
-                  restartPreview()
-                }}
-                onMouseLeave={() => {
-                  stopPreview()
-                  setPreviewEnabled(false)
-                }}
-                onBlur={() => {
-                  if (!launchBusyRef.current) {
-                    stopPreview()
-                    setPreviewEnabled(false)
+            {filteredGames.map(
+              /**
+               * Project each filteredGames entry for App; preserve input ordering in the derived collection.
+               *
+               * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+               * @param {*} index - Zero-based collection index.
+               */
+              (game, index) => (
+                <button
+                  key={game.id}
+                  data-game-card
+                  data-game-id={game.id}
+                  aria-label={game.title}
+                  aria-pressed={index === focusedIndex}
+                  tabIndex={index === focusedIndex ? 0 : -1}
+                  ref={index === focusedIndex ? selectedCardRef : null}
+                  onFocus={
+                    /**
+                     * Handle onFocus on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => {
+                      if (oskRef.current) return
+                      setCurrentIndex(index)
+                      setPreviewEnabled(true)
+                      restartPreview()
+                    }
                   }
-                }}
-                onClick={() => setCurrentIndex(index)}
-                className={
-                  'poster-card transition-all duration-300 ' +
-                  (index === focusedIndex
-                    ? 'scale-105 opacity-100 ring-2 ring-blue-500 shadow-[0_0_25px_rgba(59,130,246,0.6)]'
-                    : 'opacity-80 hover:opacity-100')
-                }
-              >
-                {game.coverUrl ? (
-                  <img
-                    src={game.coverUrl}
-                    alt={game.title}
-                    loading="lazy"
-                    className="h-full w-full object-cover"
-                    onLoad={(event) => {
-                      const image = event.currentTarget
-                      // Square and landscape packaging keeps its full original artwork.
-                      if (Math.abs(image.naturalWidth / image.naturalHeight - 2 / 3) > 0.12)
-                        image.style.objectFit = 'contain'
-                    }}
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center bg-gradient-to-br from-slate-700 to-slate-950 p-4 text-2xl font-black text-white/40">
-                    {game.systemShort}
+                  onMouseEnter={
+                    /**
+                     * Handle onMouseEnter on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => {
+                      if (launchBusyRef.current || oskRef.current) return
+                      if (index !== focusedIndex) playSound('navigate')
+                      setCurrentIndex(index)
+                      setPreviewEnabled(true)
+                      restartPreview()
+                    }
+                  }
+                  onMouseLeave={
+                    /**
+                     * Handle onMouseLeave on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => {
+                      stopPreview()
+                      setPreviewEnabled(false)
+                    }
+                  }
+                  onBlur={
+                    /**
+                     * Handle onBlur on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => {
+                      if (!launchBusyRef.current) {
+                        stopPreview()
+                        setPreviewEnabled(false)
+                      }
+                    }
+                  }
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => setCurrentIndex(index)
+                  }
+                  className={
+                    'poster-card transition-all duration-300 ' +
+                    (index === focusedIndex
+                      ? 'scale-105 opacity-100 ring-2 ring-blue-500 shadow-[0_0_25px_rgba(59,130,246,0.6)]'
+                      : 'opacity-80 hover:opacity-100')
+                  }
+                >
+                  {game.coverUrl ? (
+                    <img
+                      src={game.coverUrl}
+                      alt={game.title}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                      onLoad={
+                        /**
+                         * Handle onLoad on this App control using the current render's values; delegate state/IPC work to its owning component.
+                         *
+                         * @param {*} event - DOM/Electron event supplied by the subscription.
+                         */
+                        (event) => {
+                          const image = event.currentTarget
+                          // Square and landscape packaging keeps its full original artwork.
+                          if (Math.abs(image.naturalWidth / image.naturalHeight - 2 / 3) > 0.12)
+                            image.style.objectFit = 'contain'
+                        }
+                      }
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center bg-gradient-to-br from-slate-700 to-slate-950 p-4 text-2xl font-black text-white/40">
+                      {game.systemShort}
+                    </div>
+                  )}
+                  <div className="poster-caption absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 to-transparent text-left">
+                    <span className="text-[10px] font-bold tracking-widest text-blue-200">
+                      {game.systemShort}
+                    </span>
+                    <p className="mt-1 text-xs font-bold line-clamp-2">{game.title}</p>
                   </div>
-                )}
-                <div className="poster-caption absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 to-transparent text-left">
-                  <span className="text-[10px] font-bold tracking-widest text-blue-200">
-                    {game.systemShort}
-                  </span>
-                  <p className="mt-1 text-xs font-bold line-clamp-2">{game.title}</p>
-                </div>
-              </button>
-            ))}
+                </button>
+              )
+            )}
           </div>
         </section>
         <footer data-library-footer className="dashboard-footer relative z-20 shrink-0">
@@ -734,7 +1115,12 @@ export default function App() {
             <button
               data-launch-game
               disabled={!activeGame || !!launchState}
-              onClick={() => void launch()}
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => void launch()
+              }
             >
               <InputHint keyboard="Enter" gamepad="A">
                 {t('launch')}
@@ -748,13 +1134,25 @@ export default function App() {
             <button
               data-game-options
               disabled={!activeGame}
-              onClick={() => openPanel({ type: 'options', game: activeGame })}
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => openPanel({ type: 'options', game: activeGame })
+              }
             >
               <InputHint keyboard="O" gamepad="Y">
                 {t('options')}
               </InputHint>
             </button>
-            <button onClick={() => searchInputRef.current?.focus()}>
+            <button
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => searchInputRef.current?.focus()
+              }
+            >
               <InputHint keyboard="/" gamepad="X">
                 {t('searchAction')}
               </InputHint>
@@ -763,7 +1161,14 @@ export default function App() {
               <KeyBadge keyboard="PgUp / PgDn" gamepad="LB / RB" />
               {t('filter')}
             </span>
-            <button onClick={() => openPanel({ type: 'settings' })}>
+            <button
+              onClick={
+                /**
+                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                 */
+                () => openPanel({ type: 'settings' })
+              }
+            >
               <InputHint keyboard="Menu" gamepad="Menu">
                 {t('settings')}
               </InputHint>
@@ -819,17 +1224,27 @@ export default function App() {
                   data-initial-focus
                   data-open-guide
                   className="console-button"
-                  onClick={() => {
-                    setPanel(null)
-                    setGuideGame(panel.game)
-                  }}
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => {
+                      setPanel(null)
+                      setGuideGame(panel.game)
+                    }
+                  }
                 >
                   {t('guide')}
                 </button>
                 <button
                   data-game-option
                   className="console-button text-rose-200"
-                  onClick={() => openPanel({ type: 'delete', game: panel.game })}
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => openPanel({ type: 'delete', game: panel.game })
+                  }
                 >
                   {t('delete')}
                 </button>
@@ -837,20 +1252,32 @@ export default function App() {
             )}
             {panel.type === 'filter' && (
               <div data-navigation-grid id="console-filters" className="grid grid-cols-3 gap-3">
-                {consoles.map((system) => (
-                  <button
-                    key={system}
-                    className="console-button"
-                    aria-pressed={selectedConsole === system}
-                    onClick={() => {
-                      setSelectedConsole(system)
-                      setCurrentIndex(0)
-                      setPanel(null)
-                    }}
-                  >
-                    {system === 'ALL' ? t('all') : system}
-                  </button>
-                ))}
+                {consoles.map(
+                  /**
+                   * Project each consoles entry for App; preserve input ordering in the derived collection.
+                   *
+                   * @param {*} system - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                   */
+                  (system) => (
+                    <button
+                      key={system}
+                      className="console-button"
+                      aria-pressed={selectedConsole === system}
+                      onClick={
+                        /**
+                         * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                         */
+                        () => {
+                          setSelectedConsole(system)
+                          setCurrentIndex(0)
+                          setPanel(null)
+                        }
+                      }
+                    >
+                      {system === 'ALL' ? t('all') : system}
+                    </button>
+                  )
+                )}
               </div>
             )}
             {panel.type === 'delete' && (
@@ -880,20 +1307,32 @@ export default function App() {
             {panel.type === 'coreBrowser' && (
               <CoreBrowser
                 busy={busy}
-                onSelect={(core) =>
-                  run(
-                    () =>
-                      window.electronAPI.selectCore({
-                        gameId: panel.game?.gameId,
-                        platform: panel.platform,
-                        core
-                      }),
-                    () => {
-                      const game = panel.game
-                      setPanel(game ? null : { type: 'systems' })
-                      if (game) void launch(game)
-                    }
-                  )
+                onSelect={
+                  /**
+                   * Handle onSelect on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   *
+                   * @param {*} core - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                   */
+                  (core) =>
+                    run(
+                      /**
+                       * Perform one App operation or its success continuation under the parent's busy/error handling.
+                       */
+                      () =>
+                        window.electronAPI.selectCore({
+                          gameId: panel.game?.gameId,
+                          platform: panel.platform,
+                          core
+                        }),
+                      /**
+                       * Perform one App operation or its success continuation under the parent's busy/error handling.
+                       */
+                      () => {
+                        const game = panel.game
+                        setPanel(game ? null : { type: 'systems' })
+                        if (game) void launch(game)
+                      }
+                    )
                 }
               />
             )}
@@ -921,7 +1360,12 @@ export default function App() {
                   <button
                     data-browse-cores
                     disabled={busy}
-                    onClick={() => openPanel({ ...panel, type: 'coreBrowser' })}
+                    onClick={
+                      /**
+                       * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () => openPanel({ ...panel, type: 'coreBrowser' })
+                    }
                     className="console-button"
                   >
                     {t('browseCores')}
@@ -939,14 +1383,33 @@ export default function App() {
                   <button
                     data-upload-bios
                     disabled={busy}
-                    onClick={() =>
-                      run(
-                        () => window.electronAPI.uploadBios(panel.platform),
-                        (result) => {
-                          setNotice(result.status?.ready ? t('ready') : t('biosNotReady'))
-                          setPanel((p) => ({ ...p, ready: !!result.status?.ready }))
-                        }
-                      )
+                    onClick={
+                      /**
+                       * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () =>
+                        run(
+                          /**
+                           * Perform one App operation or its success continuation under the parent's busy/error handling.
+                           */
+                          () => window.electronAPI.uploadBios(panel.platform),
+                          /**
+                           * Perform one App operation or its success continuation under the parent's busy/error handling.
+                           *
+                           * @param {*} result - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                           */
+                          (result) => {
+                            setNotice(result.status?.ready ? t('ready') : t('biosNotReady'))
+                            setPanel(
+                              /**
+                               * Compute App's next React state from the latest queued value, avoiding stale render snapshots.
+                               *
+                               * @param {*} p - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                               */
+                              (p) => ({ ...p, ready: !!result.status?.ready })
+                            )
+                          }
+                        )
                     }
                     className="console-button"
                   >
@@ -954,7 +1417,18 @@ export default function App() {
                   </button>
                   <button
                     disabled={busy}
-                    onClick={() => run(() => window.electronAPI.openBiosFolder(panel.platform))}
+                    onClick={
+                      /**
+                       * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () =>
+                        run(
+                          /**
+                           * Perform one App operation or its success continuation under the parent's busy/error handling.
+                           */
+                          () => window.electronAPI.openBiosFolder(panel.platform)
+                        )
+                    }
                     className="console-button"
                   >
                     {t('folder')}
@@ -963,11 +1437,16 @@ export default function App() {
                     <button
                       data-launch-after-bios
                       disabled={busy}
-                      onClick={() => {
-                        const game = panel.game
-                        setPanel(null)
-                        void launch(game)
-                      }}
+                      onClick={
+                        /**
+                         * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                         */
+                        () => {
+                          const game = panel.game
+                          setPanel(null)
+                          void launch(game)
+                        }
+                      }
                       className="console-button"
                     >
                       {t('restart')}
@@ -981,13 +1460,26 @@ export default function App() {
                 <button className="console-button" onClick={closePanel}>
                   {t('back')}
                 </button>
-                <button className="console-button" onClick={() => openPanel({ type: 'settings' })}>
+                <button
+                  className="console-button"
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => openPanel({ type: 'settings' })
+                  }
+                >
                   {t('settings')}
                 </button>
                 <button
                   data-quit-app
                   className="console-button text-rose-300"
-                  onClick={() => window.electronAPI.quitApp()}
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => window.electronAPI.quitApp()
+                  }
                 >
                   {t('quit')}
                 </button>
@@ -997,20 +1489,37 @@ export default function App() {
               <>
                 <p className="mb-5 text-white/60">{t('sessionHelp')}</p>
                 <div className="flex flex-col gap-3">
-                  <button className="console-button" onClick={closePanel}>
+                  <button
+                    data-initial-focus
+                    data-session-option
+                    className="console-button"
+                    onClick={closePanel}
+                  >
                     {t('resume')}
                   </button>
                   <button
+                    data-session-option
                     className="console-button text-rose-200"
-                    onClick={() => void window.electronAPI.stopSession()}
+                    onClick={
+                      /**
+                       * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () => void window.electronAPI.stopSession()
+                    }
                   >
                     {t('stop')}
                   </button>
                 </div>
                 <button
                   data-quit-app
+                  data-session-option
                   className="console-button mt-4 text-rose-300"
-                  onClick={() => window.electronAPI.quitApp()}
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => window.electronAPI.quitApp()
+                  }
                 >
                   {t('quit')}
                 </button>
@@ -1027,11 +1536,21 @@ export default function App() {
                   data-confirm-delete-bios
                   className="console-button"
                   disabled={busy}
-                  onClick={() =>
-                    run(
-                      () => window.electronAPI.deleteBios(panel.platform),
-                      () => setPanel({ type: 'systems' })
-                    )
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () =>
+                      run(
+                        /**
+                         * Perform one App operation or its success continuation under the parent's busy/error handling.
+                         */
+                        () => window.electronAPI.deleteBios(panel.platform),
+                        /**
+                         * Perform one App operation or its success continuation under the parent's busy/error handling.
+                         */
+                        () => setPanel({ type: 'systems' })
+                      )
                   }
                 >
                   <InputHint keyboard="Enter" gamepad="A">
@@ -1043,9 +1562,28 @@ export default function App() {
             {['settings', 'systems'].includes(panel.type) && (
               <SystemSettings
                 systemPage={panel.type === 'systems'}
-                onBrowseCores={(platform) => openPanel({ type: 'coreBrowser', platform })}
-                onOpenSystems={() => openPanel({ type: 'systems' })}
-                onDeleteBios={(platform) => openPanel({ type: 'deleteBios', platform })}
+                onBrowseCores={
+                  /**
+                   * Handle onBrowseCores on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   *
+                   * @param {*} platform - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                   */
+                  (platform) => openPanel({ type: 'coreBrowser', platform })
+                }
+                onOpenSystems={
+                  /**
+                   * Handle onOpenSystems on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   */
+                  () => openPanel({ type: 'systems' })
+                }
+                onDeleteBios={
+                  /**
+                   * Handle onDeleteBios on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   *
+                   * @param {*} platform - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                   */
+                  (platform) => openPanel({ type: 'deleteBios', platform })
+                }
                 preferences={preferences}
                 togglePreference={togglePreference}
                 saveHotkeys={saveHotkeys}

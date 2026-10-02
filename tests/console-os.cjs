@@ -19,7 +19,15 @@ app.getAppPath = () => root
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
 const actions = []
-for (const action of ['show', 'hide', 'restore', 'focus', 'setAlwaysOnTop'])
+for (const action of [
+  'show',
+  'hide',
+  'restore',
+  'focus',
+  'setAlwaysOnTop',
+  'setKiosk',
+  'setFullScreen'
+])
   BrowserWindow.prototype[action] = (...args) => actions.push([action, ...args])
 let selection = { canceled: true, filePaths: [] }
 dialog.showOpenDialog = async (_window, options) => {

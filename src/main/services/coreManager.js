@@ -3,6 +3,10 @@ import { dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { inflateRawSync } from 'node:zlib'
 
+/**
+ * Ordered default libretro core candidates by console; coreFilesFor derives native host
+ * extensions.
+ */
 export const CORE_FILES = {
   PS2: ['pcsx2_libretro.dll', 'lrps2_libretro.dll'],
   PS1: ['duckstation_libretro.dll', 'mednafen_psx_hw_libretro.dll', 'swanstation_libretro.dll'],
@@ -22,19 +26,56 @@ export const CORE_FILES = {
   'Atari 7800': ['prosystem_libretro.dll'],
   'Atari Lynx': ['mednafen_lynx_libretro.dll']
 }
+/**
+ * Derive ordered platform core candidates with host-native extensions; Linux uses SO files
+ * instead of Windows DLLs.
+ *
+ * @param {string} platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
+ */
 export const coreFilesFor = (platform = process.platform) =>
   Object.fromEntries(
-    Object.entries(CORE_FILES).map(([system, files]) => [
-      system,
-      files.map((file) => (platform === 'linux' ? file.replace(/\.dll$/, '.so') : file))
-    ])
+    Object.entries(CORE_FILES).map(
+      /**
+       * Project each Object.entries(CORE_FILES) entry for coreFilesFor; preserve input ordering in the derived collection.
+       *
+       * @param {*} input1 - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
+      ([system, files]) => [
+        system,
+        files.map(
+          /**
+           * Project each files entry for coreFilesFor; preserve input ordering in the derived collection.
+           *
+           * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
+          (file) => (platform === 'linux' ? file.replace(/\.dll$/, '.so') : file)
+        )
+      ]
+    )
   )
+/**
+ * Select the official Windows/Linux x64 nightly directory; installation separately rejects
+ * unsupported hosts and architectures.
+ *
+ * @param {string} platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
+ */
 export const buildbotBase = (platform) =>
   'https://buildbot.libretro.com/nightly/' +
   (platform === 'linux' ? 'linux' : 'windows') +
   '/x86_64/latest/'
+/**
+ * 200-MiB archive, unpacked payload, and installed-file size ceiling.
+ */
 const MAX = 200 * 1024 * 1024
 // One physical-file check for the installer, catalog, status IPC and launcher.
+/**
+ * Return the absolute path only for a readable, nonempty native x64 core with valid PE/ELF
+ * headers. All status, catalog, and launch paths share this physical check.
+ *
+ * @param {string} retroarchDir - Active writable RetroArch runtime directory shared by install, status, and launch.
+ * @param {string} name - Filename or named action selected by the caller; accepted values are validated by this helper.
+ * @param {string} platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
+ */
 export function installedCorePath(retroarchDir, name, platform = process.platform) {
   if (
     typeof name !== 'string' ||
@@ -42,6 +83,10 @@ export function installedCorePath(retroarchDir, name, platform = process.platfor
     !name.endsWith(platform === 'linux' ? '.so' : '.dll')
   )
     return null
+  /**
+   * Absolute target under the active runtime cores directory; never use packaged read-only
+   * resources.
+   */
   const destination = resolve(retroarchDir, 'cores', name)
   let fd
   try {
@@ -71,6 +116,14 @@ export function installedCorePath(retroarchDir, name, platform = process.platfor
     if (fd !== undefined) fs.closeSync(fd)
   }
 }
+/**
+ * Read a ZIP central directory and inflate only the exact requested basename. Enforce size, CRC,
+ * compression, and host header checks without extracting archive paths.
+ *
+ * @param {Buffer} zip - Downloaded ZIP bytes to validate and inspect.
+ * @param {string} expected - Exact core basename allowed in the ZIP archive.
+ * @param {string} platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
+ */
 export function extractCore(
   zip,
   expected,
@@ -137,96 +190,180 @@ export function extractCore(
     throw Error('Core is not Windows x64')
   return output
 }
+/**
+ * Bind physical verification and atomic core installation to one RetroArch directory, host, and
+ * injectable fetch implementation.
+ *
+ * @param {Object} options - Named inputs for this operation.
+ * @param {string} options.retroarchDir - Active writable RetroArch runtime directory shared by install, status, and launch.
+ * @param {Function} options.fetchImpl - Injectable fetch implementation; defaults to global fetch and enables offline tests.
+ * @param {string} options.platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
+ * @param {string} options.arch - Host CPU architecture; downloadable cores require x64.
+ */
 export function createCoreManager({
   retroarchDir,
   fetchImpl = globalThis.fetch,
   platform = process.platform,
   arch = process.arch
 }) {
+  /**
+   * Host-specific candidate mapping shared by automatic lookup and installation.
+   */
   const coreFiles = coreFilesFor(platform)
+  /**
+   * Map of ordered candidate-list keys to ongoing installation Promises.
+   */
   const pending = new Map()
+  /**
+   * Resolve a core through the shared physical-file validator; return null rather than trusting a
+   * cached installed flag.
+   *
+   * @param {string} name - Filename or named action selected by the caller; accepted values are validated by this helper.
+   */
   const pathFor = (name) => installedCorePath(retroarchDir, name, platform)
-  const find = (system) => coreFiles[system]?.find((name) => pathFor(name)) || null
+  /**
+   * Return the first physically valid core in a console's ordered fallback list, or null when
+   * every candidate is absent/invalid.
+   *
+   * @param {string} system - Console ID from the shared platform registry.
+   */
+  const find = (system) =>
+    coreFiles[system]?.find(
+      /**
+       * Select the first matching coreFiles[system] entry for find; absence is handled by the caller's fallback.
+       *
+       * @param {*} name - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
+      (name) => pathFor(name)
+    ) || null
+  /**
+   * Coalesce identical candidate lists, stream bounded official ZIP downloads, verify bytes,
+   * publish atomically, and re-read the installed core. Return stage/source/target details on
+   * failure.
+   *
+   * @param {string[]} files - Ordered fallback core filenames to try.
+   */
   const installFiles = (files) => {
     const key = files.join(',')
     if (pending.has(key)) return pending.get(key)
-    const task = (async () => {
-      if (!['win32', 'linux'].includes(platform) || arch !== 'x64')
-        return { success: false, error: 'Windows or Linux x64 is required for these cores.' }
-      const existing = files.find((name) => pathFor(name))
-      if (existing) return { success: true, core: existing }
-      let failure = 'Core is unavailable from the Libretro build server.'
-      for (const name of files) {
-        const destination = resolve(retroarchDir, 'cores', name)
-        const url = `${buildbotBase(platform)}${name}.zip`
-        let stage = 'download'
-        try {
-          const response = await fetchImpl(url, {
-            signal: AbortSignal.timeout(120000),
-            redirect: 'error'
-          })
-          if (!response.ok) {
-            await response.body?.cancel()
-            throw Error(`HTTP ${response.status}`)
-          }
-          if (
-            !response.ok ||
-            !response.body ||
-            Number(response.headers.get('content-length')) > MAX
-          )
-            throw Error('Core download failed or exceeds 200 MB.')
-          const chunks = []
-          let bytes = 0
-          for await (const chunk of response.body) {
-            bytes += chunk.length
-            if (bytes > MAX) throw Error('Core download exceeds 200 MB.')
-            chunks.push(Buffer.from(chunk))
-          }
-          stage = 'extract'
-          const dll = extractCore(Buffer.concat(chunks), name, platform)
-          stage = 'write'
-          await fs.promises.mkdir(dirname(destination), { recursive: true })
-          const temporary = `${destination}.${randomUUID()}.part`
+    const task = (
+      /**
+       * Complete the enclosing callback step owned by task; caller arguments and captured state determine this stage's result.
+       */
+      async () => {
+        if (!['win32', 'linux'].includes(platform) || arch !== 'x64')
+          return { success: false, error: 'Windows or Linux x64 is required for these cores.' }
+        const existing = files.find(
+          /**
+           * Select the first matching files entry for existing; absence is handled by the caller's fallback.
+           *
+           * @param {*} name - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+           */
+          (name) => pathFor(name)
+        )
+        if (existing) return { success: true, core: existing }
+        let failure = 'Core is unavailable from the Libretro build server.'
+        for (const name of files) {
+          /**
+           * Absolute target under the active runtime cores directory; never use packaged read-only
+           * resources.
+           */
+          const destination = resolve(retroarchDir, 'cores', name)
+          const url = `${buildbotBase(platform)}${name}.zip`
+          /**
+           * User-visible failure stage used to distinguish network, extraction, filesystem,
+           * metadata-cleanup, and verification errors.
+           */
+          let stage = 'download'
           try {
-            // Fresh native Buffer writes do not propagate ZIP/browser attachment metadata.
-            await fs.promises.writeFile(temporary, dll, { flag: 'wx' })
-            if (platform === 'win32') {
-              // Only this validated Buildbot download, never arbitrary existing local binaries.
-              // Remove the named NTFS stream before publishing; no shell or system-policy edits.
-              stage = 'Windows metadata cleanup'
-              try {
-                await fs.promises.unlink(`${temporary}:Zone.Identifier`)
-              } catch (error) {
-                if (error.code !== 'ENOENT') throw error
-              }
+            const response = await fetchImpl(url, {
+              signal: AbortSignal.timeout(120000),
+              redirect: 'error'
+            })
+            if (!response.ok) {
+              await response.body?.cancel()
+              throw Error(`HTTP ${response.status}`)
             }
+            if (
+              !response.ok ||
+              !response.body ||
+              Number(response.headers.get('content-length')) > MAX
+            )
+              throw Error('Core download failed or exceeds 200 MB.')
+            const chunks = []
+            let bytes = 0
+            for await (const chunk of response.body) {
+              bytes += chunk.length
+              if (bytes > MAX) throw Error('Core download exceeds 200 MB.')
+              chunks.push(Buffer.from(chunk))
+            }
+            stage = 'extract'
+            const dll = extractCore(Buffer.concat(chunks), name, platform)
             stage = 'write'
-            // Publish only a complete core, replacing broken/zero-byte previous installs.
-            await fs.promises.rename(temporary, destination)
-            stage = 'verify'
-            const written = await fs.promises.readFile(destination)
-            if (!written.equals(dll) || !pathFor(name)) {
-              await fs.promises.rm(destination, { force: true })
-              throw Error('Installed core is missing, unreadable or differs from the download.')
+            await fs.promises.mkdir(dirname(destination), { recursive: true })
+            /**
+             * Unique exclusive staging path; publish only verified complete bytes and always clean up on
+             * failure.
+             */
+            const temporary = `${destination}.${randomUUID()}.part`
+            try {
+              // Fresh native Buffer writes do not propagate ZIP/browser attachment metadata.
+              await fs.promises.writeFile(temporary, dll, { flag: 'wx' })
+              if (platform === 'win32') {
+                // Only this validated Buildbot download, never arbitrary existing local binaries.
+                // Remove the named NTFS stream before publishing; no shell or system-policy edits.
+                stage = 'Windows metadata cleanup'
+                try {
+                  await fs.promises.unlink(`${temporary}:Zone.Identifier`)
+                } catch (error) {
+                  if (error.code !== 'ENOENT') throw error
+                }
+              }
+              stage = 'write'
+              // Publish only a complete core, replacing broken/zero-byte previous installs.
+              await fs.promises.rename(temporary, destination)
+              stage = 'verify'
+              const written = await fs.promises.readFile(destination)
+              if (!written.equals(dll) || !pathFor(name)) {
+                await fs.promises.rm(destination, { force: true })
+                throw Error('Installed core is missing, unreadable or differs from the download.')
+              }
+            } finally {
+              await fs.promises.rm(temporary, { force: true })
             }
-          } finally {
-            await fs.promises.rm(temporary, { force: true })
+            return { success: true, core: name }
+          } catch (error) {
+            failure = `Core ${stage} failed (${error.code || error.message}). Source: ${url}. Target: ${destination}`
           }
-          return { success: true, core: name }
-        } catch (error) {
-          failure = `Core ${stage} failed (${error.code || error.message}). Source: ${url}. Target: ${destination}`
         }
+        return { success: false, error: failure }
       }
-      return { success: false, error: failure }
-    })().finally(() => pending.delete(key))
+    )().finally(
+      /**
+       * Release task's pending-work bookkeeping after either success or failure.
+       */
+      () => pending.delete(key)
+    )
     pending.set(key, task)
     return task
   }
+  /**
+   * Install a mapped console core with ordered fallbacks; unsupported platforms return a failed
+   * Promise result.
+   *
+   * @param {string} system - Console ID from the shared platform registry.
+   */
   const install = (system) =>
     Object.hasOwn(coreFiles, system)
       ? installFiles(coreFiles[system])
       : Promise.resolve({ success: false, error: 'Unsupported platform.' })
   // The IPC layer additionally requires membership in the catalog or an installed local core.
+  /**
+   * Validate a selected host-native basename before installation. The IPC caller must also
+   * establish trusted catalog membership.
+   *
+   * @param {string} name - Filename or named action selected by the caller; accepted values are validated by this helper.
+   */
   const installNamed = (name) =>
     typeof name === 'string' &&
     /^[a-z0-9_-]+_libretro\.(dll|so)$/.test(name.toLowerCase()) &&

@@ -1,3 +1,4 @@
+/** Mount the isolated renderer once. StrictMode exercises effect cleanup; I18nProvider supplies language and fallback dictionaries to every dashboard surface. */
 import './assets/main.css'
 import React from 'react'
 import ReactDOM from 'react-dom/client'

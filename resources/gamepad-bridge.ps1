@@ -21,12 +21,27 @@ public static class ZenithPad {
   public static bool IsForeground(int pid) { uint owner; GetWindowThreadProcessId(GetForegroundWindow(), out owner); return owner == pid; }
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);
+  // Only activate the exact Zenith HWND supplied by Main; never foreground an arbitrary process.
+  public static bool FocusZenith(long handle, int pid) {
+    var window = new IntPtr(handle);
+    uint owner;
+    if (handle == 0 || pid <= 0 || GetWindowThreadProcessId(window, out owner) == 0 || owner != (uint)pid) return false;
+    ShowWindowAsync(window, 5);
+    return SetForegroundWindow(window);
+  }
 }
 '@
 $held = $false
 $awaitRelease = $false
 $padKeys = @(8,9)
 $keyCodes = @()
+$zenithWindow = 0L
+$zenithPid = 0
+$overlayOpen = $false
+$focusAttempts = 0
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
+$lastEmulatorForeground = -10000L
 $buttonMasks = @(0x1000,0x2000,0x4000,0x8000,0x100,0x200,0x10000,0x20000,0x20,0x10,0x40,0x80,1,2,4,8,0x400)
 [ZenithPad]::StartReader()
 while ($true) {
@@ -35,9 +50,19 @@ while ($true) {
   if ($null -ne $command) {
     if ($null -eq $command -or $command -eq 'stop') { break }
     if ($command.StartsWith('{')) {
-      try { $config = $command | ConvertFrom-Json; $padKeys = @($config.pad); $keyCodes = @($config.keys) } catch { }
+      try {
+        $config = $command | ConvertFrom-Json
+        $padKeys = @($config.pad); $keyCodes = @($config.keys)
+        $zenithWindow = [long]$config.zenithWindow; $zenithPid = [int]$config.zenithPid
+      } catch { }
+    }
+    if ($command -eq 'focus-zenith') {
+      $overlayOpen = $true
+      $focusAttempts = 3
     }
     if ($command -eq 'resume') {
+      $overlayOpen = $false
+      $focusAttempts = 0
       $awaitRelease = $true
       $emulator.Refresh()
       [void][ZenithPad]::ShowWindow($emulator.MainWindowHandle,9)
@@ -45,6 +70,8 @@ while ($true) {
     }
 
   }
+  $emulatorForeground = [ZenithPad]::IsForeground($EmulatorPid)
+  if ($emulatorForeground) { $lastEmulatorForeground = $clock.ElapsedMilliseconds }
   $down = $false
   for ($slot=0; $slot -lt 4; $slot++) {
     $buttons = [ZenithPad]::Read($slot)
@@ -59,11 +86,24 @@ while ($true) {
   if ($awaitRelease) {
     if (-not $down) { $awaitRelease = $false }
     $held = $down
-    Start-Sleep -Milliseconds 60
+    Start-Sleep -Milliseconds 20
     continue
   }
-  if (-not [ZenithPad]::IsForeground($EmulatorPid)) { $down = $false }
-  if ($down -and -not $held) { [Console]::WriteLine('home') }
+  # XInput polling observes input; it cannot consume Steam's independent desktop bindings.
+  # A short foreground grace handles Steam taking focus between the chord and this poll.
+  # Outside that grace, do not steal focus from other desktop applications.
+  $recentEmulator = $emulatorForeground -or ($clock.ElapsedMilliseconds - $lastEmulatorForeground -le 500)
+  if ($down -and -not $held -and -not $overlayOpen -and $recentEmulator) {
+    $overlayOpen = $true
+    $focusAttempts = 3
+    [Console]::WriteLine('home')
+    [Console]::Out.Flush()
+  }
+  if ($focusAttempts -gt 0) {
+    $focusAttempts--
+    if ([ZenithPad]::FocusZenith($zenithWindow, $zenithPid)) { $focusAttempts = 0 }
+    elseif ($focusAttempts -eq 0) { [Console]::Error.WriteLine('Zenith foreground request was denied by Windows.') }
+  }
   $held = $down
-  Start-Sleep -Milliseconds 60
+  Start-Sleep -Milliseconds 20
 }

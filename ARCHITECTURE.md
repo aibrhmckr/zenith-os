@@ -1,11 +1,14 @@
 # Zenith OS — Teknik mimari ve katkı rehberi
 
-Bu belge 30 Eylül 2026 tarihindeki kaynak ağacını açıklar. Tasarlanan gelecekteki
+Bu belge 2 Ekim 2026 tarihindeki kaynak ağacını açıklar. Tasarlanan gelecekteki
 modüller ile çalışan kod birbirinden ayrılmıştır. Zenith bir Electron masaüstü
 başlatıcısıdır; bağımsız bir çekirdek/işletim sistemi değildir. ROM, BIOS,
 RetroArch kurulumu ve indirilen oyun medyası Git kaynak kod dağıtımının parçası değildir.
 Üretim installer'ı RetroArch programını ayrı `extraResources` olarak içerir;
-BIOS, ROM ve kişisel çalışma verileri dahil edilmez.
+BIOS, ROM, çekirdek ikilileri (`cores/**`) ve kişisel çalışma verileri dahil edilmez.
+Ana pencere çerçevesiz tam ekran açılır; kapatma ve oyun içi dönüş işlemleri Zenith
+menüsü üzerinden yürütülür. Bu görsel konsol modu, işletim sistemi erişimini kilitleyen
+bir güvenlik/kiosk politikası değildir.
 
 ## 1. Genel sistem mimarisi ve teknoloji yığını
 
@@ -18,6 +21,8 @@ flowchart TB
   Bridge -->|invoke| Main[Electron Main: index.js]
   Main -->|IPC olayları| Bridge
   Bridge --> UI
+  Main --> Window[Frameless fullscreen BrowserWindow]
+  Window --> UI
   Main --> FS[games / RetroArch cores ve system / userData]
   Main --> Services[Scraper / Guide / CoreCatalog / CoreManager]
   Services --> Net[Libretro CDN + Buildbot / Archive.org / Wikipedia]
@@ -68,6 +73,46 @@ Electron 39.8.10, Vite 7.3.6 ve React 19.3.0 ile doğrulandı.
   gerçekliğini kanıtlamaz. Mevcut IPC'de ayrıca frame/origin yetkilendirme katmanı
   yoktur; renderer'a uzaktan uygulama yüklenmemesi bu mimarinin önemli varsayımıdır.
 
+### Pencere yaşam döngüsü ve çerçevesiz konsol modu
+
+`src/main/index.js:createWindow`, `BrowserWindow` oluştururken
+`fullscreen: true`, `kiosk: true`, `frame: false`, `autoHideMenuBar: true` kullanır.
+`show: false` ilk boyama hazır olana kadar pencereyi gizler;
+`ready-to-show` olayında `show()` çağrılır. 1440×800 boyutları tam ekran dışındaki
+varsayılan pencere ölçüleridir; tam ekran içerik alanını ekran belirler.
+Windows başlık çubuğu ve yerel büyüt/küçült/kapat kontrolleri çizilmez.
+Geliştirme ve paketli sürüm aynı pencere seçeneklerini kullanır.
+
+`contextIsolation: true`, `nodeIntegration: false`, preload yolu ve mevcut
+`sandbox: false` ayarı korunur. Tam ekran için yeni IPC veya renderer yetkisi yoktur.
+`Alt+F4`, işletim sistemi görev değiştirme ve sistem tuşları genel olarak engellenmez;
+Electron kiosk modu etkin olsa da bu bir Windows güvenlik kilidi değildir. Escape/F10 veya yapılandırılmış
+kombinasyon → ana menü → `quit-app` normal çıkış yoludur.
+
+Emülatör başladığında `hide()` tam ekran özelliğini değiştirmez. Oturum menüsünde
+`openSessionMenu` show/focus/always-on-top uygular; `resumeSession` tekrar gizler.
+Child çıkışındaki idempotent `finish`, always-on-top'ı kaldırıp show/restore/focus
+çağırır. Paketli runtime kopyalaması bu pencerenin açılmasını bekletmez.
+`tests/runtime-startup.cjs` normal ve kritik kopyalama-hatası senaryolarında gerçek
+pencerenin fullscreen durumunu, otomatik gizlenen menüyü ve içerik/dış sınırlarının
+aynı olmasını doğrular. `tests/local-games.cjs` artık 1440 px'e bağlı sekiz sütun
+varsaymak yerine kullanılabilir genişlikten poster kapasitesini ve dikey gezinmeyi sınar.
+
+### Kaynak açıklamalarını okuma ve güncel tutma
+
+Main servisleri, preload metotları, React bileşenleri, hook'lar ve yerel yardımcılar
+üzerindeki İngilizce JSDoc blokları amaç, yan etki ve parametre sözleşmelerini açıklar.
+Kritik ref/state ve yapılandırma açıklamaları sahiplik, eşzamanlılık ve neden ayrı
+saklandıkları üzerine odaklanır. Effect açıklamaları abonelik/timer temizliğini ve
+geç kalan yanıtların nasıl ele alındığını belirtir. JSON sözlüklerine yorum eklenmez;
+JSON sözdizimini bozmak yerine i18n sözleşmesi hook ve bu belgede tutulur.
+
+Bir davranış değişikliğinde fonksiyon açıklamasını, ilgili IPC satırını ve regresyon
+testini birlikte güncelleyin. JSDoc bir çalışma zamanı doğrulaması değildir;
+renderer'dan gelen değerler Main'de ayrıca doğrulanmalıdır. React callback'leri
+bulundukları hook/bileşenin ref ve state'ini kapatır; cleanup eklemeden yeni bir
+poller, ses oynatıcı veya global event dinleyicisi oluşturmayın.
+
 ## 2. Dosya ve klasör hiyerarşisi
 
 Envanter uygulama kaynaklarını, yardımcıları, testleri ve yapılandırmayı kapsar.
@@ -93,7 +138,7 @@ zenith/
 ├── .vscode/                editör/debug yapılandırması
 ├── build/                  paket ikonu ve macOS entitlement şablonu
 ├── games/                  yerel ROM'lar; Git ve dağıtım dışında
-├── emulators/retroarch/    yerel exe/cores/system; Git ve dağıtım dışında
+├── emulators/retroarch/    yerel runtime; Git dışında, seçili program dosyaları pakette
 ├── media/                  eski yerel klasör; indirmeler tarafından kullanılmaz
 ├── node_modules/           npm bağımlılıkları
 ├── out/                    Vite çıktısı
@@ -114,7 +159,7 @@ zenith/
 | `src/main/services/local-media.js`   | `mediaUrl`, `serveMedia`, `revokeMediaDirectory`: SHA-256 anahtarlı runtime URL tablosu; GET/HEAD, byte range/suffix range, MIME ve 416/404 davranışı. Akışla servis eder; tüm videoyu belleğe almaz.                                                                                                                                                                                                                                                                               |
 | `src/main/services/guideService.js`  | Wikipedia REST lore ve Archive.org videogamemanuals/BookReader metadata/sayfaları. `getLore`, `getManual`, `getPage`, `getFeatures`, `setFeatures`, `whenIdle`. 10 sn, JSON 2 MiB/sayfa JPEG 8 MiB, en fazla 512 sayfa; local lore/manual cache ve eşzamanlı istek tekilleştirme.                                                                                                                                                                                                   |
 | `src/main/services/biosStatus.js`    | `BIOS_RULES`, `biosDirectory`, `biosStatus`, `deleteBios`. PS2, PS1, Dreamcast ad/boyut denetimi; yalnızca ilgili BIOS adaylarını kaldırır, system dizininin tamamını silmez. Süreç/ağ yok.                                                                                                                                                                                                                                                                                         |
-| `src/main/services/coreManager.js`   | `CORE_FILES`, `coreFilesFor`, `buildbotBase`, `extractCore`, `createCoreManager`. `find`, `pathFor`, `install`, `installNamed`; resmi x64 Buildbot ZIP'i, CRC ve Windows PE/Linux ELF64 kontrolü; 120 sn/200 MiB sınır. `installedCorePath` fiziksel, okunabilir ve doğru host başlığına sahip dosyayı doğrular; geçerli dosya yeniden indirilmez, bozuk/boş dosya atomik olarak yenilenir. Aynı dosya listesi kurulumları tekilleşir.                                                                                                                                                                                               |
+| `src/main/services/coreManager.js`   | `CORE_FILES`, `coreFilesFor`, `buildbotBase`, `extractCore`, `createCoreManager`. `find`, `pathFor`, `install`, `installNamed`; resmi x64 Buildbot ZIP'i, CRC ve Windows PE/Linux ELF64 kontrolü; 120 sn/200 MiB sınır. `installedCorePath` fiziksel, okunabilir ve doğru host başlığına sahip dosyayı doğrular; geçerli dosya yeniden indirilmez, bozuk/boş dosya atomik olarak yenilenir. Aynı dosya listesi kurulumları tekilleşir.                                              |
 | `src/main/services/coreCatalog.js`   | `createCoreCatalog`, `biosPlatformForCore`: hosta uygun tüm Buildbot core dosyalarını listeler, kurulu core'ları birleştirir, alfabetik ad/arama alias'ları üretir. 10 sn/2 MiB, 1 saat RAM cache, userData disk fallback. `list`, `allowed`, `get`, `select`, `forget`; oyun veya platform bazında çekirdek tercihi. BIOS isteyen bilinen core ailesini seçilen dosya adından da tanır.                                                                                            |
 | `src/main/services/sessionBridge.js` | `startSessionBridge`: Windows PowerShell veya Linux Python child process. Sayısal PID ve doğrulanmış hotkey JSON'unu stdin'den geçirir; stdout `home` satırını callback'e dönüştürür. `update`, `resume`, `stop`; parçalı stdout satırlarını tamponlar, stderr loglar. Linux script yolunu `app.asar.unpacked` fiziksel yoluna dönüştürür.                                                                                                                                          |
 
@@ -175,13 +220,13 @@ hooks altında; iş verisi React state ve Main JSON dosyalarında bulunur. Paket
 
 | Dosya                                                                                 | Görev                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resources/gamepad-bridge.ps1`                                                        | C# P/Invoke XInput ve GetAsyncKeyState, yalnız RetroArch foreground PID; 60 ms polling. stdin JSON pad/keys, resume/stop; stdout home. Guide sürücüye bağlıdır. Admin/registry değişikliği yok.                       |
+| `resources/gamepad-bridge.ps1`                                                        | Windows XInput/GetAsyncKeyState: 20 ms polling, emulator foreground + 500 ms grace, validated Zenith HWND/PID activation. stdin: JSON pad/keys/zenithWindow/zenithPid, focus-zenith/resume/stop; stdout: home.        |
 | `resources/gamepad-bridge.py`                                                         | Python stdlib ctypes → sistem SDL2/X11; 30 ms polling. Linux gamepad background hint, X11 keymap, /proc/PID yaşam kontrolü; Python/SDL2 yoksa yardımcı çalışmayabilir, Wayland eşdeğeri yok.                          |
 | `resources/icon.png`                                                                  | Electron pencere/Linux ikonu.                                                                                                                                                                                         |
 | `build/icon.png`, `build/icon.ico`, `build/icon.icns`, `build/entitlements.mac.plist` | Builder kaynakları ve şablon macOS entitlement. Bunlar runtime oyun medyası değildir; dağıtım hakları yine doğrulanmalıdır.                                                                                           |
 | `scripts/check-distribution.mjs`                                                      | Git indeksini inceler; ignored/runtime yolları ve şüpheli binary magic/2 MiB'den büyük staged blob'ları reddeder. Uygulama ikonları/şablon SVG/üç WAV dar allowlist. Commit geçmişini veya medya lisansını incelemez. |
 | `.githooks/pre-commit`                                                                | Dağıtım kontrolünü commit öncesinde çalıştırır; clone sonrası ayrıca etkinleştirilir.                                                                                                                                 |
-| `.github/workflows/ci.yml`                                                            | Push/PR: npm ci, dağıtım kontrolü, lint, Node birim testleri, build; yayın/deploy yok.                                                                                                                                |
+| `.github/workflows/ci.yml`                                                            | Push/PR verify: windows-latest + Node 22; npm ci, dağıtım kontrolü, lint, Node testleri, Vite build. Installer veya Electron UI testi çalıştırmaz; yayın/deploy yok.                                                  |
 | `package.json`, `package-lock.json`                                                   | Komutlar, bağımlılıklar ve kilitli çözümleme.                                                                                                                                                                         |
 | `electron.vite.config.mjs`                                                            | Main/preload/renderer build; `@renderer` alias'ı, React plugin. `@/` alias'ı tanımlı değildir.                                                                                                                        |
 | `electron-builder.yml`                                                                | ASAR uygulama allowlist’i; extraResources ile RetroArch; kişisel runtime verilerinin dışlanması; beforePack doğrulaması; platform hedefleri. Publish URL/author şablondur, release öncesi düzenlenmelidir.            |
@@ -212,6 +257,22 @@ Ek dağıtım regresyonu: `tests/distribution.test.mjs`, ayrı geçici Git depos
 zorla eklenen ROM uzantıları ve yeniden adlandırılmış EXE imzasının commit guard
 tarafından reddedildiğini doğrular.
 
+### Envantere dahil ek doğrulama dosyaları
+
+| Dosya                                                     | Doğruladığı sözleşme                                                                                               |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `tests/core-verification.test.mjs`                        | Fiziksel core denetimi, diskten silinince Missing, CRC/başlık/yazma hataları ve Windows Zone.Identifier temizliği. |
+| `tests/core-download.cjs`                                 | Paketli runtime hedefi, gerçek Main/Preload/UI, hata bildirimi ve indirme hedefinin mutlak -L yoluyla eşitliği.    |
+| `tests/bundled-runtime.test.mjs`                          | Artımlı kopyalama, kilitli opsiyonel CFG, kritik dosya hatası ve yarım dosya onarımı.                              |
+| `tests/runtime-startup.cjs`                               | Fullscreen/frameless pencere açılışı, kopyalama beklerken çalışan IPC ve kritik hatada açık kalan pencere.         |
+| `tests/emulator-bootstrap.test.mjs`                       | Resmi kararlı sürüm seçimi, sentetik 7z çıkarma, yol/link sınırı ve paket önkontrolü.                              |
+| `scripts/nsis-process.cjs`, `tests/nsis-process.test.mjs` | Sınırlı Windows spawn adaptörü, ortam koruması, tekrar politikası ve NSIS sihirbaz ayarları.                       |
+
+`scripts/setup-emulators.mjs`, `scripts/validate-emulators.cjs` ve
+`src/main/services/bundledRuntime.js` ayrıntıları bölüm 7'dedir. Bu dosyalar aynı
+işlemi yapmaz: geliştirici indirir, builder yerel runtime'ı doğrular, son kullanıcı
+uygulaması paketlenmiş programı yazılabilir profile kopyalar.
+
 ## 3. IPC sözlüğü
 
 Tüm uygulama istekleri `src/main/index.js` içinde `ipcMain.handle`, preload'da
@@ -229,7 +290,7 @@ Her invoke bir Promise döndürür; tabloda Promise'ın çözümlenen değeri ya
 | `install-core`          | `installCore(platform)`                                       | Result + `core`                                              | Varsayılan core/fallback kurulumu. Unsupported platform Result.error; browser kullanılabilir.                                                                               |
 | `list-cores`            | `listCores()`                                                 | `{success,cores:[{fileName,name,installed}],offline,error?}` | Resmi host kataloğu + local kurulum, alfabetik; ağ kesilince cache/local sonuç.                                                                                             |
 | `select-core`           | `selectCore({gameId?,platform?,core})`                        | Result + `core`                                              | Gerçek oyun ID veya bilinen platform; Unassigned için oyun ID şart. Katalogda/yerelde olmayan ad reddedilir. Kurulumdan sonra tercih saklanır; IPC doğrudan oyun başlatmaz. |
-| `get-system-status`     | `getSystemStatus()`                                           | `[{platform,core,corePath,coreDirectory,bios}]`                                     | Kütüphanedeki platformlar, platform tercihi veya default kurulu core, BIOS durumu. Oyun bazlı override her sistem satırında gösterilmez.                                    |
+| `get-system-status`     | `getSystemStatus()`                                           | `[{platform,core,corePath,coreDirectory,bios}]`              | Kütüphanedeki platformlar, platform tercihi veya default kurulu core, BIOS durumu. Oyun bazlı override her sistem satırında gösterilmez.                                    |
 | `upload-bios`           | `uploadBios(platform)`                                        | Result + `fileName,status`                                   | Native bin/rom seçimi, doğru hedefe exclusive copy; aynı adlı dosya üzerine yazılmaz, canceled desteklenir.                                                                 |
 | `delete-bios`           | `deleteBios(platform)`                                        | Result + `status`                                            | Aktif oyun varsa engel; yalnız bu platformun aday BIOS dosyaları.                                                                                                           |
 | `open-bios-folder`      | `openBiosFolder(platform)`                                    | Result                                                       | mkdir + shell.openPath; shell hata metni Result.error.                                                                                                                      |
@@ -290,7 +351,7 @@ izin tablosuna alınmış cache dosyasını sunar. Bunlar invoke kanalı değild
 
 Game temel alanları: `id,title,fileName,path,system,systemShort,cover,backdrop`.
 Enrichment: `gameId,region,year,developer,genre,media,mediaDirectory`; renderer
-URL'leri `coverUrl,backdropUrl,musicUrl,videoUrl`. ID, platform + temiz ad slug'ı +
+URL'leri `coverUrl,backdropUrl,titleScreenUrl,musicUrl,videoUrl`. ID, platform + temiz ad slug'ı +
 SHA-256'nın 12 hex karakterinden oluşur; eski import kayıtlarında importKey de hash'e girer.
 Yıl/geliştirici/tür scraper'da null kalabilir; Wikipedia lore ayrı önbellektir,
 her metadata alanının otomatik dolduğu varsayılmamalıdır.
@@ -498,7 +559,7 @@ npm run test:hotkeys
 Diğer test komutları `test:local-games`, `test:launcher`, `test:bios`, `test:scraper`,
 `test:media`, `test:guide`, `test:guide-ui`, `test:media-paths`,
 `test:console-services`, `test:platform`, `test:import-hotkeys`, `test:core-catalog`
-ve `test:core-browser` olarak package.json'dadır. Electron test script'leri build
+`test:core-browser`, `test:core-download` ve `test:runtime-startup` olarak package.json'dadır. Electron test script'leri build
 gerektirir. Kaynak eklenince bu envanteri, IPC eklenince sözlük ve preload'u birlikte güncelleyin.
 
 ```sh
@@ -513,6 +574,36 @@ macOS desteği verilmiş sayılmaz. Linux RetroArch çalıştırma izni ve hosta
 .so core gerekir. Steam Deck Steam Input gamepad düzeni ve desktop/game mode
 farkları gerçek donanımda test edilmelidir. Builder'ın author/homepage/appId/publish
 alanları release öncesi proje sahiplerince gerçek değerlere çevrilmelidir.
+
+### Windows CI ve yerel doğrulama ayrımı
+
+`.github/workflows/ci.yml` içindeki `verify` işi `windows-latest` runner'ında,
+`actions/setup-node@v4` ile Node 22 ve npm cache kullanarak çalışır. Sıra:
+checkout → npm ci → check:distribution → lint → Node birim testleri → Vite build.
+`permissions: contents: read` ile kaynak doğrulaması yapar; release yayımlamaz.
+
+`package.json` şu anda `@rollup/rollup-win32-x64-msvc` paketini doğrudan bağımlılık
+olarak içerir. Linux runner'ındaki `npm ci` bu nedenle EBADPLATFORM üretir;
+Windows runner seçimi mevcut kilitli bağımlılık grafiğiyle uyum sağlar. Bu değişiklik
+Linux temiz kurulumunun çözüldüğü anlamına gelmez. Linux CI yeniden eklenirken
+platforma özel Rollup bağımlılığını uygun optional/platform çözümlemesine taşıyın,
+lockfile'ı kontrollü güncelleyin ve Linux'ta temiz npm ci ile ayrıca doğrulayın.
+
+CI'daki `npm run build` yalnız uygulama katmanlarını derler. NSIS installer,
+RetroArch bootstrap ve Electron arayüz testleri bu işte çalışmaz. Yerel kapsamlı
+kontrol için önce bir kez build, sonra aşağıdaki sentetik Electron senaryoları:
+
+`local-games.cjs` (normal ve `--psp-path`), `launcher.cjs`, `bios.cjs`,
+`media.cjs`, `guide.cjs`, `controller.cjs`, `console-os.cjs --screenshot`,
+`hotkeys.cjs`, `core-browser.cjs`, `core-download.cjs`,
+`runtime-startup.cjs` (normal ve `--critical`). Her biri `npx electron tests/...`
+ile çalıştırılır. `node --test tests/*.test.mjs` tüm Node regresyonlarını kapsar.
+Test fixture'ları geçici profiller kullanır; gerçek ROM, BIOS ve çekirdek gerekmez.
+
+Installer öncesi inceleme: `git diff --check`, `git diff --stat` ve
+`git diff -- src tests ARCHITECTURE.md`. Kaynak diff'i ve test sonuçları gözden
+geçirildikten sonra `npm run build:win` çalıştırılır; yalnız Vite build yapılması
+`dist/` altındaki eski EXE'nin güncellendiği anlamına gelmez.
 
 ## 6. Dağıtım ve hak sahipliği koruması
 
@@ -586,7 +677,7 @@ dosyaları, artımlı kopyalama, sıfır bayt onarımı ve kritik DLL hataların
 kopyalama beklerken pencerenin açılmasını ve hatalarda açık kalmasını doğrular.
 `npm run test:runtime-startup` normal Vite derlemesi sonrası iki senaryoyu çalıştırır.
 
-## Windows NSIS kurulum sihirbazı
+## 8. Windows NSIS kurulum sihirbazı
 
 Varsayılan Windows hedefi NSIS'tir: oneClick=false, perMachine=false,
 allowToChangeInstallationDirectory=true. Masaüstü/Başlat menüsü kısayolları ve
@@ -615,3 +706,263 @@ kurucunun çalıştırılmasını da içerir. Yardımcı adaptör bu ayrımı he
 electron-builder sürüm yükseltmelerinde tests/nsis-process.test.mjs ve gerçek
 NSIS build birlikte doğrulanmalıdır. Test, ortam koruma, sınırlı tekrar ve
 sihirbaz yapılandırmasını kapsar. Kalıcı işletim sistemi engelleri bypass edilmez.
+
+## 9. Oturum yapılandırması, ses ve indirme meta verileri
+
+### Çağrı zinciri ve ayar önceliği
+
+```mermaid
+sequenceDiagram
+  participant UI as App.launch
+  participant Preload as electronAPI
+  participant Main as index.js launchGame
+  participant Core as coreManager
+  participant Disk as userData
+  participant RA as RetroArch child
+  UI->>UI: launch.wav ve 500 ms preview fadeOut
+  UI->>Preload: launchGame(gamePath, consoleType)
+  Preload->>Main: launch-game invoke
+  Main->>Core: find / pathFor (fiziksel doğrulama)
+  alt Core veya BIOS eksik
+    Main-->>UI: missing_core / missing_bios
+  else Hazır
+    Main->>Disk: media/{gameId}/session.cfg yaz
+    Main->>RA: spawn -L absoluteCore -f --appendconfig absoluteConfig
+    Main-->>UI: game-started
+    Main->>Main: hide + session bridge
+    RA-->>Main: exit / close / error
+    Main-->>UI: game-stopped ve launch sonucu
+    Main->>Main: show / restore / focus
+  end
+```
+
+`src/main/index.js:launchGame`, her başlatmada `gameMediaDirectory` ile doğrulanan
+oyun dizinindeki `session.cfg` dosyasını yeniden yazar. `resolve(runtime, 'session.cfg')`
+mutlak yol üretir. Çalışma dizini `retroarchDir` olsa da hem `-L` hem `--appendconfig`
+mutlak dosya yollarıdır; komut bir shell string'i olarak birleştirilmez.
+
+Bu dosya RetroArch'ın ana config'ine ek oturum override'ıdır. `config_save_on_exit`
+false tutulduğu için uygulamanın dayattığı geçici ayarlar ana config'e otomatik
+kaydedilmez. Kalıcı OS ses aygıtı, monitör yenileme hızı, Windows ses mikseri veya
+kullanıcının küresel RetroArch config'i bu işlemle değiştirilmez.
+`auto_overrides_enable = "false"`, sonradan yüklenen core/content config'lerinin
+menü atamalarını yeniden etkinleştirmesini engeller. Bu oturumlarda kullanıcının
+otomatik core/content config override'ları uygulanmaz; dosyaları silinmez.
+
+`openSessionMenu()`, `setKiosk(true)` ve `setFullScreen(true)` ile konsol modunu
+yeniden uygular; ardından `setAlwaysOnTop(true, 'screen-saver')`, `show()` ve
+`focus()` çağırır. `focus-zenith` komutu native köprüye, `session-menu` olayı
+renderer'a gider. `ConsoleModal` ilk açılışta “Oyuna dön” butonunu seçer; DOM odağı
+kaybolsa da seçim indeksini korur ve pencere yeniden odaklandığında seçimi onarır.
+Yön tuşları ve D-pad yalnız menü seçeneklerini değiştirir.
+
+Main, `getNativeWindowHandle()` sonucunu tam sayı hassasiyetini koruyan bir string
+ve kendi PID'si olarak köprüye iletir. Köprü HWND sahibini doğrular, `ShowWindowAsync`
+ve `SetForegroundWindow` çağırır. En fazla üç odak denemesi yapılır; Windows reddederse
+stderr'e bilgi yazılır. XInput döngüsü 20 ms aralıkla çalışır. RetroArch odağının
+son 500 ms içinde kaybedilmesi durumunda da kombinasyon kabul edilerek Steam'in
+araya girdiği kısa odak geçişleri karşılanır. Bu sürenin dışında masaüstünde kullanılan
+kombinasyon Zenith'e odak çalmaz; açık menüde yinelenen olaylar da yok sayılır.
+
+`resumeSession()` üstte kalmayı kaldırır, Zenith'i gizler ve köprüye `resume`
+gönderir. Köprü emülatöre odak verir ve kombinasyon bırakılana kadar tekrar açılışı
+engeller. Child çıkış/hata temizliği de üstte kalmayı kaldırır. XInput polling
+Steam Desktop Input olaylarını tüketmez; Steam'in bağımsız masaüstü eşlemeleri
+engellenmiş sayılmaz. Windows foreground kısıtları nedeniyle gerçek kontrolcü,
+Steam ve exclusive-fullscreen oyunla donanım doğrulaması gerekir.
+
+`tests/hotkeys.cjs` IPC, kiosk çağrıları ve gerçek DOM odağını; yeni
+`tests/windows-session-bridge.test.mjs` ise PowerShell döngüsünü sahte native
+girişlerle sınar. Testler gerçek masaüstü odağını değiştirmeden kısa odak kaybı,
+tuş bırakma, ilgisiz masaüstü girdisi ve sınırlı odak denemelerini doğrular.
+
+### Session.cfg bayrak sözlüğü
+
+| Grup                 | Bayrak ve değer                                                                                                                                                                                                                                                               | Amaç ve sınır                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Görüntü eşitleme     | `video_vsync = "true"`                                                                                                                                                                                                                                                        | Görüntü sunumunda V-Sync talep eder; tek başına yüksek Hz monitörde doğru emülasyon hızının kanıtı değildir.                     |
+| Yenileme referansı   | `video_refresh_rate = "60.0"`                                                                                                                                                                                                                                                 | Oturumun yapılandırılmış yenileme referansı; işletim sisteminin fiziksel ekran modunu zorla 60 Hz'e değiştirmez.                 |
+| Ses eşitleme         | `audio_sync = "true"`, `audio_rate_control = "true"`                                                                                                                                                                                                                          | Ses üretimi ile çalışma döngüsünün eşleşmesini talep eder. Sürücü/core desteği gerçek oynatımda sınanır.                         |
+| Hız                  | `fastforward_ratio = "1.0"`, `vrr_runloop_enable = "true"`                                                                                                                                                                                                                    | Güncel oturumun hız ve runloop tercihleri; önceki false VRR ayarı kullanılmaz. Her oyunun doğal FPS'i 60 olmak zorunda değildir. |
+| Sunum kuyruğu        | `video_max_swapchain_images = "3"`                                                                                                                                                                                                                                            | Destekleyen görüntü sürücülerine swapchain görüntü sayısını bildirir.                                                            |
+| Modern OSD           | `notification_show_osd = "false"`, `notification_show_autoconfig = "false"`, `notification_show_core_load = "false"`, `video_osd_widgets = "false"`                                                                                                                           | Çekirdek adı, kontrolcü eşleştirme bildirimi ve widget katmanını gizler.                                                         |
+| Klasik OSD           | `video_font_enable = "false"`                                                                                                                                                                                                                                                 | Widget dışındaki klasik metin bildirimlerinin görünmesini de engeller.                                                           |
+| Windows ses sürücüsü | `audio_driver = "xaudio"`                                                                                                                                                                                                                                                     | Yalnız `process.platform === 'win32'` olduğunda eklenir; Linux/Steam Deck sürücüsü bu bayrakla değiştirilmez.                    |
+| Ses çıkışı           | `audio_enable = "true"`, `audio_mute_enable = "false"`, `audio_volume = "0.0"`                                                                                                                                                                                                | Ses açık, mute kapalı, kazanç 0 dB. `0.0` sessizlik anlamına gelmez. OS mikseri sessizse uygulama bunu açmaz.                    |
+| Odak                 | `pause_nonactive = true`                                                                                                                                                                                                                                                      | Zenith overlay öne gelince odak kaybı üzerinden duraklama; işletim sistemi process suspend uygulanmaz.                           |
+| Kalıcılık            | `config_save_on_exit = false`                                                                                                                                                                                                                                                 | Oturum override'larının çıkışta ana ayarlara yazılmasını önler.                                                                  |
+| Quick Menu           | `input_menu_toggle_gamepad_combo = "0"`, `input_menu_toggle_btn = "nul"`, `input_menu_toggle = "nul"`, `input_menu_toggle_axis = "nul"`, `input_menu_toggle_mbtn = "nul"`, `input_hotkey_block_delay = "0"`, `input_enable_hotkey = "nul"`, `input_enable_hotkey_btn = "nul"` | RetroArch menü kısayollarını kaldırır; Zenith'in native köprüsüyle çakışmayı azaltır.                                            |
+| Çıkış                | `input_exit_emulator = "nul"`, `input_quit_gamepad_combo = "0"`                                                                                                                                                                                                               | Escape ve exit kombinasyonunun Zenith oturum menüsünü atlayıp emülatörü doğrudan kapatmasını önler.                              |
+| Dosya dizinleri      | `system_directory`, `savefile_directory`, `savestate_directory`                                                                                                                                                                                                               | Aktif RetroArch system dizini ve oyun başına userData saves/states yolları; config için slash/quote normalizasyonu yapılır.      |
+
+Bu değişiklikler için yeni IPC eklenmemiştir. `launch-game` aynı request/Result
+sözleşmesini, `game-started` ve `game-stopped` aynı yaşam döngüsünü kullanır.
+`src/preload/index.js` yalnız aktarım yapar; ayarlar renderer tarafından keyfi
+config satırları olarak gönderilemez. `tests/launcher.cjs` mutlak config yolunu,
+Windows/Linux ayrımını ve oturum satırlarını sahte child ile doğrular; gerçek
+144 Hz ekran, XAudio aygıtı ve emülasyon performansı donanım testi gerektirir.
+
+### Zone.Identifier: sınırlı indirme sonrası temizleme
+
+`src/main/services/coreManager.js:createCoreManager → installFiles` sırası:
+
+1. Resmi host Buildbot adresinden ZIP'i 120 saniye/200 MiB sınırlarıyla alır.
+2. `extractCore` yalnız beklenen dosyayı çıkarır; CRC, boyut ve PE/ELF64 x64 başlığını doğrular.
+3. `fs.promises.writeFile(temporary, buffer, {flag: 'wx'})` yeni benzersiz `.part`
+   dosyası yazar. Tarayıcının ZIP dosyasına eklediği stream'ler Buffer'a taşınmaz.
+4. Windows'ta sadece bu geçici dosyanın `:Zone.Identifier` NTFS named stream'ini
+   `fs.promises.unlink` ile kaldırır. `ENOENT` normaldir; `EPERM` dahil diğer hatalar
+   `Windows metadata cleanup` aşaması olarak başarısız Result'a dönüşür.
+5. Rename ile `retroarchDir/cores/{name}` hedefini yayımlar; dosyayı tekrar okuyup
+   indirilen byte'larla ve `installedCorePath` sonucu ile karşılaştırır.
+6. Başarıdan veya hatadan sonra geçici dosyayı temizler. Geçersiz son hedef doğrulamada kaldırılır.
+
+Bu mekanizma eski veya elle konulmuş DLL'leri topluca unblock etmez; PowerShell,
+Defender istisnası, yönetici izni veya güvenlik ilkesi değişikliği kullanmaz.
+CRC/başlık denetimi kriptografik yayıncı imzası doğrulaması değildir. `cores/**`
+installer dışında kaldığından işlem builder hook'unda değil, kullanıcının
+`install-core` veya `select-core` isteği sırasında çalışır. Hata `SystemSettings`
+veya App core panelinde görünür; başarılı kurulum sonrasında fiziksel durum yeniden
+okunur. `tests/core-verification.test.mjs`, `tests/core-download.cjs` ve
+`tests/platform.test.mjs` bu sınırları ve Windows/Linux ayrımını kapsar.
+
+## Özellik Geliştirme Kataloğu (Extension & Feature Guide)
+
+Bu katalog mevcut dosyalara dayanır; aşağıdaki adımların hiçbiri ROM/BIOS/medya
+ikilisini repoya koymayı veya renderer'a doğrudan dosya sistemi erişimi vermeyi gerektirmez.
+Değişiklikleri ilgili katmandan başlayarak yapın ve belirtilen testlerle doğrulayın.
+
+### 1. Yeni bir konsol veya emülatör platformu eklemek
+
+1. **Platform kimliği ve dosya tanıma:** `src/shared/consoles.js` içindeki
+   `CONSOLE_EXTENSIONS` tablosuna benzersiz, kalıcı konsol ID'si ve küçük harfli
+   uzantılarını ekleyin. `GAME_FILE_FILTERS` buradan türediğinden picker, importer
+   ve scanner birlikte güncellenir. BIN/ROM/ZIP gibi belirsiz uzantıları başka
+   platformdan sessizce çalmayın; `Unassigned` ve oyun bazında core seçimi kullanılabilir.
+2. **Özel yol/ad ipuçları:** Gerekliyse `src/main/index.js:getLocalGames` ile
+   `services/libraryStore.js:list` aynı tespit sonucunu vermelidir.
+   `gameImporter.js:copy`, merkezi kopyalama sırasında kaybolabilecek klasör
+   ipuçlarını korumalıdır; PSP ISO mantığı mevcut örnektir. CUE/GDI yan dosya
+   kopyalama ve ZIP açma desteği otomatik sağlanmaz; bunlar ayrı tasarım gerektirir.
+3. **Libretro çekirdeği:** `services/coreManager.js:CORE_FILES` içine sıralı
+   varsayılan core dosyalarını ekleyin. `coreFilesFor` Linux `.so` uzantısını üretir;
+   Buildbot'ta her iki hostun x64 dosyasının gerçekten mevcut olduğunu kontrol edin.
+   İsim/CRC/header/path kontrollerini gevşetmeyin. Gözat için `coreCatalog.js:LABELS`
+   içine okunabilir ad ve platform alias'ı eklenebilir.
+4. **BIOS teşhisi:** Yalnız gerçekten harici BIOS gerektiren platform için
+   `biosStatus.js:BIOS_RULES` tanımlayın. Bölge, ad, boyut ve alt dizin kurallarını
+   belirleyin; BIOS indirmesi eklemeyin. Manuel core seçiminde de aynı engeli
+   uygulamak için `coreCatalog.js:biosPlatformForCore` listesini güncelleyin.
+   Yeni kurala uygun upload uzantıları ve ad normalizasyonunu `index.js:uploadBios`
+   içinde kontrol edin. `deleteBios` diğer konsolların firmware'ini korumalıdır.
+5. **Medya eşleştirme:** `scraper.js:SYSTEMS` için Libretro klasörünü,
+   `mediaScraper.js:SYSTEMS` için Archive Video Snaps alias'larını ekleyin.
+   Bir sağlayıcıda bulunmaması oyun başlatmayı engellememelidir.
+6. **Renderer ve IPC:** App filtreleri `CONSOLE_EXTENSIONS` ve mevcut oyunlardan
+   türediğinden yeni sabit buton listesi oluşturmayın. Yeni açıklamalar için
+   `src/renderer/src/locales/en.json` ve `tr.json` anahtarlarını birlikte ekleyin.
+   `SystemSettings` mevcut status verisini kullanır; yalnız yeni veri gerektiğinde
+   Main handler, preload metodu ve bölüm 3 IPC sözlüğünü birlikte genişletin.
+7. **Test ve dağıtım:** `tests/local-games.cjs`, `console-services.test.mjs`,
+   `core-catalog.test.mjs`, `platform.test.mjs` ve ilgili BIOS/core UI testlerine
+   sentetik örnek ekleyin. Yeni ROM/firmware formatlarını `.gitignore`,
+   `scripts/check-distribution.mjs` ve `electron-builder.yml` dışlamalarıyla kontrol
+   edin. Gerçek oyun veya indirilen DLL/SO test fixture'ı değildir.
+
+Libretro dışındaki bağımsız bir emülatör için yalnız CORE_FILES yeterli değildir.
+`index.js:launchGame` çevresinde ayrı bir process adapter tasarlayın: executable/cwd,
+argümanlar, BIOS/config, save dizinleri, stdout/stderr ve idempotent exit cleanup.
+`runtimePaths`, `bundledRuntime`, bootstrap, paket doğrulaması ve native session
+bridge PID/focus davranışı da aynı adapter'a göre ele alınmalıdır. Renderer'a
+shell komutu gönderten genel bir IPC eklemeyin.
+
+### 2. Yeni ses/video önizleme sağlayıcısı veya scraper eklemek
+
+1. **Sınırları ayırın:** Sağlayıcı servisini `src/main/services/` altında oluşturun.
+   `mediaScraper.js:createMediaDownloader` örneğindeki gibi `userData`, `fetchImpl`
+   ve timeout enjekte edin. Çağrı sözleşmesi oyun + istenen `kinds` +
+   `onResult(kind, pathOrNull)` olsun. Uygun medya yoksa sonuç null kalmalıdır.
+2. **Depolamayı tekleştirin:** `mediaPaths.js:gameMediaDirectory(userData, gameId)`
+   kullanarak `theme.mp3` veya `preview.mp4` hedefini üretin. `game.mediaDirectory`
+   veya renderer payload'ından keyfi hedef kabul etmeyin. `.part` yazımı, gerçek
+   byte limiti, imza kontrolü, rename ve finally temizliği sağlayıcıya aittir.
+3. **Ağ ve eşleştirme:** HTTPS host/path allowlist'ini yönlendirmelerde de uygulayın;
+   deadline headers ve body aktarımını kapsasın. Mevcut politika 15 saniye/5 MiB'dır.
+   Erişim kısıtlı öğeleri atlayın, birebir temiz oyun adı/platform/bölge eşleştirmesi
+   yapın; eşleşmeyen devam oyununu indirmeyin. Yalnız URL'ye veya Content-Length'e güvenmeyin.
+4. **Kuyruk ve manifest:** `scraper.js:queueMedia` içinde sağlayıcı sırasını açıkça
+   tanımlayın. Ses/video ve artwork birbirini beklememeli. `saveRecords` üzerinden
+   tek `games.json` kuyruğunu kullanın; servislerin aynı dosyaya bağımsız yazmasına
+   izin vermeyin. Yeni sağlayıcı için ayrı retry timestamp'i veya sürümlü cache
+   anahtarı seçin, böylece eski sağlayıcının negatif cache'i ilk denemeyi engellemez.
+5. **Canlı UI:** Tamamlanınca mevcut `onMediaUpdated → decorateGame →
+game-media-updated → preload.onGameMediaUpdated → useGameLibrary` yolunu kullanın.
+   Aynı MP3/MP4 sözleşmesinde yeni IPC gerekmez. `local-media.js` range/HEAD desteğini
+   ve `useMediaPreview` debounce/fade/cleanup davranışını koruyun. Yeni codec/MIME
+   eklenecekse protokol, CSP, Vite ve Electron codec desteğini birlikte doğrulayın.
+6. **Silme ve test:** İşleri `runningMedia`/`pendingMedia` ve `removed` kontrolüne
+   dahil edin. `forget` tamamlandıktan sonra geç gelen sonuç cache'i yeniden
+   yaratmamalıdır. `tests/scraper.test.mjs`, `tests/media-paths.test.mjs` ve
+   `tests/media.cjs` içinde timeout, redirect, büyük/bozuk içerik, offline cache,
+   bağımsız bitiş ve silme yarışı senaryoları ekleyin.
+
+Kapak sağlayıcısı için `scraper.js:KINDS/NAMES/catalog/scan` genişletilir; lore/manual
+sağlayıcısı için `guideService.js` ve `GuideDrawer` sözleşmesi kullanılır. Açık bir
+endpoint içeriğin yeniden dağıtım izni değildir; indirilen içerik kullanıcı
+profilinde kalır ve kaynak bağlantıları korunur.
+
+### 3. UI teması veya yeni bir ayar seçeneği eklemek
+
+1. **Görsel katman:** `src/renderer/src/assets/main.css` aktif stil girişidir;
+   `base.css` şablonu şu anda import edilmez. Tema renklerini CSS custom property'leri
+   altında toplayıp mevcut kurallara uygulayın. App'in `zenith-shell` kökü veya
+   documentElement üzerinde bir `data-theme` değeri kullanılabilir; bu henüz mevcut
+   bir tema seçici olduğu anlamına gelmez.
+2. **Yerleşim sözleşmesi:** Poster ölçüsü/gap değişirse `useGridColumns` ölçümü,
+   `App.moveIndex`, tek/çift satır genişlemesi ve `console-os.cjs --screenshot`
+   birlikte doğrulanmalıdır. Gamepad focus ring, modal native top layer,
+   pointer-events-none vignette ve reduced-motion desteğini koruyun.
+3. **Tercih modeli:** Yeni boolean için `hooks/usePreferences.js:DEFAULTS` içine
+   varsayılan ekleyin. String/enum tercihi için yalnız toggle listesine eklemek
+   yeterli değildir: yükleme normalizasyonu, izinli değerler ve setter ekleyin.
+   Eski bozuk/eksik localStorage kaydından güvenli varsayılana dönüşü test edin.
+4. **Ayar kontrolü:** `components/SystemSettings.jsx` içine erişilebilir switch veya
+   `ConsoleDropdown` ekleyin. `ConsoleModal` kontrol listesinde focus almalı,
+   `data-initial-focus`/ilk Dil odağını bozmamalı ve B üst panele dönmelidir.
+   Yeni metinler her iki locale dosyasında olmalı; badge'ler `InputHint/KeyBadge`
+   üzerinden aktif cihaza uymalıdır.
+5. **Etki ve kalıcılık:** Renderer-only tercihler `zenith-preferences` localStorage'da
+   saklanır. Main veya native helper'ın da okuması gerekiyorsa `save-hotkeys` örneğini
+   izleyen dar, doğrulanan bir IPC ve userData JSON sözleşmesi tasarlayın; keyfi dosya
+   veya config satırı yazan genel metot açmayın. Preload event'leri cleanup/disposer
+   döndürmeli; `usePreferences` geç gelen yanıtı unmount sonrasında uygulamamalıdır.
+6. **Ses ve doğrulama:** Uygun seçim/toggle hareketinde `emitSound('toggle')` veya
+   App'in `playSound` callback'ini kullanın; yeni AudioContext/oscillator oluşturmayın.
+   `tests/console-os.cjs`, `controller.cjs`, `hotkeys.cjs` ve gerekirse `media.cjs`
+   ile mouse/keyboard/gamepad, yeniden açılış, nested dropdown iptali ve odak dönüşünü test edin.
+
+### 4. RetroArch session.cfg içine yeni bayrak/parametre eklemek
+
+1. `src/main/index.js:launchGame` içindeki `fs.writeFileSync(config, [...].join('\n'))`
+   dizisini bulun. Bootstrap'taki veya dağıtılmayan kök `retroarch.cfg` dosyasını
+   değiştirmek mevcut kurulumlara oturum ayarı uygulamaz.
+2. Bayrağın gerçek RetroArch adını, beklediği değer türünü ve desteklediği sürücü/OS'yi
+   upstream config ile doğrulayın. Sabit kontrollü satır ekleyin; Windows'a özgüyse
+   XAudio örneği gibi platform koşulu kullanın. Kullanıcı kaynaklı path için mevcut
+   `quote` normalizasyonunu kullanın; satır sonu veya keyfi config metni kabul etmeyin.
+3. `config` mutlak kalmalı ve spawn ayrı executable + argument array ile yapılmalıdır.
+   `cwd: retroarchDir`, `shell: false`, fiziksel `corePath` ve `--appendconfig` korunur.
+   `config_save_on_exit=false` oturum ayarının küresel config'e taşınmasını önler.
+4. Sabit bayrak için preload/IPC değişmez. Ayarlanabilir seçenek gerekiyorsa önce
+   tercih şeması, Main allowlist/doğrulama, kalıcılık ve renderer kontrolünü tanımlayın;
+   ham RetroArch config düzenleyicisi gibi bir IPC eklemeyin.
+5. `tests/launcher.cjs` içinde üretilen gerçek geçici `session.cfg` içeriğini ve
+   spawn'ın mutlak appendconfig argümanını sınayın. Platforma özel bayrağın diğer
+   hosta sızmadığını, eksik core/BIOS durumunda spawn olmadığını koruyun.
+   Core yazımını etkiliyorsa `core-verification.test.mjs` ve `core-download.cjs`
+   regresyonlarını da çalıştırın. Bu belgenin bölüm 9 tablosu ve README'nin oturum
+   açıklaması aynı değeri belirtmelidir.
+6. `npm run lint`, Node testleri, Vite build ve ilgili Electron testlerinden sonra
+   diff'i inceleyin. Gerçek ses/görüntü iddialarını fiziksel cihaz üzerinde doğrulayın;
+   yalnız sahte spawn testiyle sabit FPS veya her aygıtta ses garantisi vermeyin.
+   Son kullanıcı installer'ını kaynak diff incelemesinden sonra ayrı olarak üretin.

@@ -6,7 +6,7 @@ const path = require('node:path')
 const assert = require('node:assert/strict')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-controller-'))
 fs.mkdirSync(path.join(root, 'games'))
-for (const name of [
+const fixtureNames = [
   'Alpha.iso',
   'Beta.iso',
   'Delta.iso',
@@ -15,9 +15,11 @@ for (const name of [
   'Gamma.iso',
   'Hotel.iso',
   'India.iso',
-  'Juliet.iso'
-])
-  fs.writeFileSync(path.join(root, 'games', name), '')
+  'Juliet.iso',
+  // Keep multiple rows available on wide fullscreen monitors.
+  ...Array.from({ length: 64 }, (_, i) => `Z-fixture-${String(i).padStart(2, '0')}.iso`)
+]
+for (const name of fixtureNames) fs.writeFileSync(path.join(root, 'games', name), '')
 app.getAppPath = () => root
 app.setPath('userData', path.join(root, 'profile'))
 app.disableHardwareAcceleration()
@@ -58,7 +60,15 @@ async function run(window) {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});
     input.dispatchEvent(new Event('input',{bubbles:true}));
   }`)
-  await waitFor("document.querySelectorAll('[data-game-card]').length===9")
+  await waitFor(`document.querySelectorAll('[data-game-card]').length===${fixtureNames.length}`)
+  const { columns, titles } = await evaluate(`(() => {
+    const cards = Array.from(document.querySelectorAll('[data-game-card]'));
+    return {
+      columns: getComputedStyle(cards[0].parentElement).gridTemplateColumns.split(' ').length,
+      titles: cards.map(card => card.getAttribute('aria-label'))
+    };
+  })()`)
+  assert(titles.length > columns + 1, 'Fixture provides a second row at the actual screen width')
   assert.equal(await evaluate("document.body.textContent.includes('DOLBY AUDIO')"), false)
   assert.equal(await evaluate("!!document.querySelector('[data-controller-status]')"), false)
   assert(await evaluate("!!document.querySelector('[data-library-footer] [data-game-options]')"))
@@ -155,14 +165,14 @@ async function run(window) {
   for (const navigation of [
     [
       [15, 'Beta'],
-      [13, 'Juliet'],
-      [12, 'Alpha'],
+      [13, titles[columns + 1]],
+      [12, 'Beta'],
       [14, 'Alpha']
     ],
     [
       [[1, 0], 'Beta'],
-      [[0, 1], 'Juliet'],
-      [[0, -1], 'Alpha'],
+      [[0, 1], titles[columns + 1]],
+      [[0, -1], 'Beta'],
       [[-1, 0], 'Alpha']
     ]
   ]) {
@@ -235,7 +245,7 @@ async function run(window) {
   await selected('Beta')
   assert.equal(
     await evaluate("document.querySelectorAll('[data-game-card]').length"),
-    9,
+    fixtureNames.length,
     'OSK draft never changes the background selection or library'
   )
   await evaluate("document.querySelector('[data-game-card]').focus()")
