@@ -72,8 +72,8 @@ export function cleanGameName(fileName) {
  */
 export function gameMediaId(game) {
   const slug =
-    cleanGameName(game.fileName)
-      .title.normalize('NFKD')
+    (game.rpcs3Installed ? game.titleId : cleanGameName(game.fileName).title)
+      .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
@@ -226,6 +226,7 @@ export function createScraper({
       developer: null,
       genre: null,
       ...previous,
+      ...(game.rpcs3Installed ? { title: game.title, titleId: game.titleId, path: game.path } : {}),
       media: game.media
     }
   }
@@ -325,7 +326,9 @@ export function createScraper({
    */
   function enrich(game) {
     const gameId = gameMediaId(game)
-    const metadata = cleanGameName(game.fileName)
+    const metadata = game.rpcs3Installed
+      ? { title: game.title, region: null }
+      : cleanGameName(game.fileName)
     const directory = gameMediaDirectory(userData, gameId)
     const media = Object.fromEntries(
       Object.entries(NAMES).map(

@@ -1,3 +1,4 @@
+const { discImage } = require('./fixtures/disc-image.cjs')
 const { coreBinary } = require('./fixtures/core-archive.cjs')
 // Real Electron IPC/renderer; emulator process and native dialogs are test doubles.
 const { app, BrowserWindow, dialog } = require('electron')
@@ -37,7 +38,10 @@ const fixtures = [
   ['Genesis', 'gen', 'genesis_plus_gx_libretro.dll']
 ]
 for (const [, extension] of fixtures) {
-  fs.writeFileSync(path.join(gamesDirectory, `Özel oyun & test.${extension}`), '')
+  fs.writeFileSync(
+    path.join(gamesDirectory, `Özel oyun & test.${extension}`),
+    extension === 'iso' ? discImage('PS2') : ''
+  )
 }
 app.getAppPath = () => fixtureRoot
 app.setPath('userData', path.join(fixtureRoot, 'profile'))
@@ -116,11 +120,11 @@ async function checkLauncher(window) {
   result = await evaluate(launchCall())
   assert.match(result.error, /missing_core/)
   result = await evaluate(launchCall(gamePath, 'GameCube'))
-  assert.match(result.error, /platform does not match/)
+  assert.equal(result.error, 'missing_core', 'Library platform overrides stale renderer hints')
   result = await evaluate(launchCall(path.join(gamesDirectory, 'missing.iso')))
   assert.match(result.error, /Game file is missing/)
   result = await evaluate(launchCall(gamePath, 'GBA'))
-  assert.match(result.error, /platform does not match/)
+  assert.equal(result.error, 'missing_core', 'Library platform overrides stale renderer hints')
   assert.equal(spawns.length, 0)
 
   for (const [system, extension, core] of fixtures) {
@@ -232,7 +236,13 @@ async function checkLauncher(window) {
       '-f'
     ])
     await finish(call.child)
-    assert.equal((await evaluate(launchCall(rom, 'PS2'))).success, false)
+    call = await begin(rom, 'PS2')
+    assert.equal(
+      call.args[1],
+      path.join(coresDirectory, 'ppsspp_libretro.dll'),
+      'Stale label uses detected PSP core'
+    )
+    await finish(call.child)
   }
 
   // PS1 fallback and priority when both cores are installed.

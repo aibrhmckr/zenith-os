@@ -30,7 +30,7 @@ for (const file of files) {
     continue
   }
   if (
-    /(^|\/)(emulators|games|roms|bios|firmware|media|cores|saves|states|manuals|videos|music|cache)(\/|$)/i.test(
+    /(^|\/)(emulators|games|roms|bios|firmware|media|cores|dev_flash[0-9]*|dev_hdd[0-9]*|PS3_GAME|saves|states|manuals|videos|music|cache)(\/|$)/i.test(
       file
     )
   )
@@ -42,6 +42,9 @@ for (const file of files) {
     })
     if (
       bytes.subarray(0, 2).toString() === 'MZ' ||
+      bytes.subarray(0, 5).toString() === 'SCEUF' ||
+      bytes.subarray(0, 4).equals(Buffer.from([127, 80, 75, 71])) ||
+      bytes.subarray(0, 4).equals(Buffer.from([83, 67, 69, 0])) ||
       bytes.subarray(0, 4).equals(Buffer.from([127, 69, 76, 70])) ||
       bytes.subarray(0, 2).toString() === 'PK' ||
       bytes.subarray(0, 4).toString() === 'RIFF' ||

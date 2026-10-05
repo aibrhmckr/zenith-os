@@ -117,6 +117,9 @@ export default function useGameLibrary() {
    */
   useEffect(() => {
     mounted.current = true
+    const removeLibrary = window.electronAPI.onLibraryChanged(() => {
+      void refresh(false)
+    })
     const remove = window.electronAPI.onScrapeProgress(
       /**
        * Consume onScrapeProgress application payloads in remove; the enclosing effect disposes the IPC subscription on unmount.
@@ -199,6 +202,7 @@ export default function useGameLibrary() {
       mounted.current = false
       remove()
       removeMedia()
+      removeLibrary()
     }
   }, [refresh, withLatestMedia])
   /**

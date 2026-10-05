@@ -35,12 +35,15 @@
     "test:core-catalog": "node --test tests/core-catalog.test.mjs",
     "test:core-browser": "npm run build && electron tests/core-browser.cjs",
     "test:core-download": "npm run build && electron tests/core-download.cjs",
-    "test:runtime-startup": "npm run build && electron tests/runtime-startup.cjs && electron tests/runtime-startup.cjs --critical"
+    "test:runtime-startup": "npm run build && electron tests/runtime-startup.cjs && electron tests/runtime-startup.cjs --critical",
+    "test:rpcs3": "node --test tests/rpcs3.test.mjs tests/rpcs3-install.test.mjs tests/rpcs3-library.test.mjs && npm run build && electron tests/rpcs3-launcher.cjs"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "@rollup/rollup-win32-x64-msvc": "^4.63.5"
+    "@rollup/rollup-win32-x64-msvc": "^4.63.5",
+    "js-yaml": "^4.3.2",
+    "7zip-bin": "^5.2.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",
@@ -48,7 +51,6 @@
     "@rollup/wasm-node": "^4.63.5",
     "@tailwindcss/postcss": "^4.3.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "7zip-bin": "^5.2.0",
     "autoprefixer": "^10.6.1",
     "electron": "^39.2.6",
     "electron-builder": "^26.0.12",

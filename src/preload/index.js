@@ -11,6 +11,29 @@ const api = {}
  * return cleanup functions.
  */
 const localGamesAPI = {
+  setGamePlatform: (gameId, platform) =>
+    ipcRenderer.invoke('set-game-platform', { gameId, platform }),
+  /** Installed title changes invalidate the library; return an unsubscribe function. */
+  onLibraryChanged: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('library-changed', listener)
+    return () => ipcRenderer.removeListener('library-changed', listener)
+  },
+  /** Confirmation is supplied only after the user accepts the download prompt. */
+  downloadRpcs3: (confirmed = false) => ipcRenderer.invoke('download-rpcs3', { confirmed }),
+  /** Native pickers own the input paths; renderer cannot submit arbitrary files/CLI options. */
+  installPs3Firmware: () => ipcRenderer.invoke('install-ps3-firmware'),
+  installPs3Package: () => ipcRenderer.invoke('install-ps3-package'),
+  cancelRpcs3Install: () => ipcRenderer.invoke('cancel-rpcs3-install'),
+  onRpcs3InstallProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress)
+    ipcRenderer.on('rpcs3-install-progress', listener)
+    return () => ipcRenderer.removeListener('rpcs3-install-progress', listener)
+  },
+  /** Recheck the standalone executable and installed firmware; returns a structured PS3 status. */
+  getRpcs3Status: () => ipcRenderer.invoke('get-rpcs3-status'),
+  /** Open only the Main-owned userData RPCS3 directory for manual installation. */
+  openRpcs3Folder: () => ipcRenderer.invoke('open-rpcs3-folder'),
   /**
    * Read the normalized persistent keyboard/gamepad combination. Invokes get-hotkeys; callers
    * receive its Promise result.

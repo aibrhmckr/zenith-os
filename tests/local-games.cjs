@@ -13,10 +13,14 @@ const gamesDirectory = path.join(fixtureRoot, 'games')
 app.getAppPath = () => fixtureRoot
 app.setPath('userData', path.join(fixtureRoot, 'profile'))
 app.disableHardwareAcceleration()
+// Hidden Chromium windows may suspend compositor animations. Exercise the app's
+// reduced-motion scroll path so geometry assertions do not depend on visibility.
+app.commandLine.appendSwitch('force-prefers-reduced-motion')
 BrowserWindow.prototype.show = () => {}
 
 const expectedSystems = {
-  iso: pspPath ? 'PSP' : 'PS2',
+  iso: pspPath ? 'PSP' : 'PS3',
+  pkg: 'PS3',
   chd: 'PS2',
   gz: 'PS2',
   cue: 'PS1',
@@ -59,7 +63,13 @@ async function checkWindow(window) {
       if (await evaluate(code)) return
       await new Promise((resolve) => setTimeout(resolve, 30))
     }
-    throw new Error(`Timed out: ${code}`)
+    const layout = await evaluate(`(() => {
+      const card = document.querySelector('[data-game-card][aria-pressed=true]');
+      const grid = card?.parentElement;
+      return grid ? {section:document.querySelector('.dashboard-library').dataset, tracks:getComputedStyle(grid).gridTemplateColumns, scrollTop:grid.scrollTop, scrollHeight:grid.scrollHeight, clientHeight:grid.clientHeight,
+        card:card.getBoundingClientRect().toJSON(), grid:grid.getBoundingClientRect().toJSON()} : null;
+    })()`)
+    throw new Error(`Timed out: ${code}; layout=${JSON.stringify(layout)}`)
   }
   const reload = async () => {
     const loaded = new Promise((resolve) => window.webContents.once('did-finish-load', resolve))
@@ -81,12 +91,17 @@ async function checkWindow(window) {
   assert(fs.statSync(gamesDirectory).isDirectory(), 'Missing games folder is created')
   assert.deepEqual(await evaluate('window.electronAPI.getLocalGames()'), [])
   for (const extension of Object.keys(expectedSystems)) {
-    fs.writeFileSync(path.join(gamesDirectory, `Game-${extension}.${extension.toUpperCase()}`), '')
+    fs.writeFileSync(
+      path.join(gamesDirectory, `Game-${extension}.${extension.toUpperCase()}`),
+      'fixture'
+    )
   }
   fs.mkdirSync(path.join(gamesDirectory, 'not-a-game.iso'))
   fs.writeFileSync(path.join(gamesDirectory, 'ignored.txt'), '')
   fs.writeFileSync(path.join(gamesDirectory, 'Özel # % oyun.iso'), '')
   const hints = {
+    'Example (PS3).iso': 'PS3',
+    'Example PlayStation 3.ISO': 'PS3',
     'Portable (PSP).iso': 'PSP',
     'Portable pSp.ISO': 'PSP',
     'Grand Theft Auto - Vice City Stories (USA).iso': 'PSP',
@@ -105,13 +120,20 @@ async function checkWindow(window) {
   fs.writeFileSync(path.join(gamesDirectory, 'Özel # % oyun.png'), image.toPNG())
 
   const games = await evaluate('window.electronAPI.getLocalGames()')
+  const ps3 = games.find((game) => game.fileName === 'Game-pkg.PKG')
+  assert(ps3)
+  const ps3Launch = await evaluate(
+    `window.electronAPI.launchGame(${JSON.stringify(ps3.path)}, 'PS3')`
+  )
+  assert.equal(ps3Launch.success, false)
+  assert.equal(ps3Launch.error, 'ps3_package_not_installed')
   assert.equal(games.length, Object.keys(expectedSystems).length + 1 + Object.keys(hints).length)
   for (const [name, system] of Object.entries(hints)) {
     assert.equal(games.find((game) => game.fileName === name).systemShort, system)
   }
   assert.equal(
     games.find((game) => game.fileName === 'Özel # % oyun.iso').systemShort,
-    pspPath ? 'PSP' : 'PS2'
+    pspPath ? 'PSP' : 'PS3'
   )
   for (const [extension, system] of Object.entries(expectedSystems)) {
     const game = games.find(
@@ -166,11 +188,15 @@ async function checkWindow(window) {
     await key('ArrowRight')
     await waitFor(`document.querySelector('h1').textContent === ${JSON.stringify(titles[i + 1])}`)
   }
-  await waitFor("document.querySelector('[data-game-card]').parentElement.scrollTop > 0")
-  assert(
-    await evaluate("document.querySelector('[data-game-card]').parentElement.scrollTop > 0"),
-    'Selection scrolls into view'
-  )
+  // A wide/fullscreen display may fit the whole fixture without scrolling.
+  // Require a visible selected card in both cases, and scrolling only for overflow.
+  await waitFor(`(() => {
+    const card = document.querySelector('[data-game-card][aria-pressed=true]');
+    const grid = card.parentElement;
+    const bounds = grid.getBoundingClientRect(), selected = card.getBoundingClientRect();
+    return selected.top >= bounds.top - 1 && selected.bottom <= bounds.bottom + 1 &&
+      (grid.scrollHeight <= grid.clientHeight + 1 || grid.scrollTop > 0);
+  })()`)
   await key('ArrowDown')
   assert.equal(await selected(), titles.at(-1), 'Last incomplete row stays in bounds')
   await evaluate("document.querySelector('input').focus()")
@@ -249,6 +275,8 @@ const timeout = setTimeout(() => {
   app.exit(1)
 }, 30000)
 app.once('browser-window-created', (_event, window) => {
+  // show() is stubbed: allow transitions/scroll animations in this hidden test window.
+  window.webContents.setBackgroundThrottling(false)
   window.webContents.once('did-finish-load', async () => {
     try {
       await checkWindow(window)

@@ -9,6 +9,10 @@ import { CONSOLE_EXTENSIONS, GAME_FILE_FILTERS } from '../shared/consoles'
 import { createScraper } from './services/scraper'
 import { mediaUrl, serveMedia, revokeMediaDirectory } from './services/local-media'
 import { createGuideService } from './services/guideService'
+import { downloadRpcs3 } from './services/rpcs3Download'
+import { installRpcs3Content } from './services/rpcs3Content'
+import { scanRpcs3Games, isRpcs3ManagedPath } from './services/rpcs3Library'
+import { createRpcs3Runtime } from './services/rpcs3Runtime'
 import { createCoreManager } from './services/coreManager'
 import { createLibraryStore } from './services/libraryStore'
 import { biosDirectory, biosStatus, deleteBios } from './services/biosStatus'
@@ -35,6 +39,49 @@ const { gamesDirectory, retroarchDir, retroarchExecutable } = runtimePaths({
  * One serialized importer for the central games directory; source files are copied, never moved.
  */
 const importGames = createGameImporter(gamesDirectory)
+/** Standalone PS3 runtime, physically checked at status and launch time. */
+const rpcs3 = createRpcs3Runtime({ userData: app.getPath('userData') })
+/** A single maintenance lease covers picker, download, extraction and RPCS3 installer exit. */
+let rpcs3Job = null
+const rpcs3Status = () => ({
+  ...rpcs3.status(),
+  hostPlatform: process.platform,
+  operation: rpcs3Job?.progress || null
+})
+async function maintainRpcs3(action) {
+  if (launchInProgress || rpcs3Job)
+    return { success: false, error: 'Stop the running game or wait for RPCS3 setup to finish.' }
+  const job = { controller: new AbortController(), progress: { phase: 'starting' } }
+  rpcs3Job = job
+  const progress = (value) => {
+    job.progress = value
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('rpcs3-install-progress', value)
+  }
+  job.promise = (async () => {
+    try {
+      return await action({ signal: job.controller.signal, progress })
+    } catch (error) {
+      return { success: false, error: error.message, status: rpcs3.status() }
+    } finally {
+      rpcs3Job = null
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('rpcs3-install-progress', null)
+    }
+  })()
+  return job.promise
+}
+/** Publish a library invalidation after a successful PKG install, including reinstalls/updates. */
+async function installRpcs3AndRefresh(options) {
+  const result = await installRpcs3Content(options)
+  if (result.success && options.kind === 'package') {
+    const installed = scanRpcs3Games(rpcs3).find((game) => game.titleId === result.titleId)
+    if (installed) getLibrary().add([installed.path])
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library-changed')
+  }
+  return result
+}
+
 /**
  * Main-owned hotkey persistence shared with the background input bridge; renderer audio/language
  * settings use localStorage separately.
@@ -73,7 +120,7 @@ let library
  */
 const getLibrary = () => (library ||= createLibraryStore(app.getPath('userData')))
 /**
- * The single running RetroArch process; menu/resume/stop handlers act only on this child.
+ * The single running emulator process (RetroArch or RPCS3); menu/resume/stop handlers act only on this child.
  */
 let activeChild = null
 /**
@@ -130,28 +177,8 @@ let mainWindow
  * destructive BIOS/ROM operations.
  */
 let launchInProgress = false
-/**
- * Reverse platform-extension lookup built from the shared registry; ISO PSP hints are applied
- * during scanning.
- */
-const consoleByExtension = new Map(
-  Object.entries(CONSOLE_EXTENSIONS).flatMap(
-    /**
-     * Expand Object.entries(CONSOLE_EXTENSIONS) entries for consoleByExtension, flattening each result into the shared lookup/list.
-     *
-     * @param {*} input1 - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-     */
-    ([system, extensions]) =>
-      extensions.map(
-        /**
-         * Project each extensions entry for consoleByExtension; preserve input ordering in the derived collection.
-         *
-         * @param {*} extension - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-         */
-        (extension) => [extension, system]
-      )
-  )
-)
+/** Supported regular-file extensions; ambiguous platform detection lives in the shared helper. */
+const supportedExtensions = new Set(Object.values(CONSOLE_EXTENSIONS).flat())
 /**
  * Capability table for adjacent ROM images; only registered URLs are exposed through game-cover.
  */
@@ -278,12 +305,12 @@ function getLocalGames() {
        * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
        */
       (file) =>
-        consoleByExtension.has(extname(file.name).toLowerCase()) &&
+        supportedExtensions.has(extname(file.name).toLowerCase()) &&
         !getLibrary().excluded(join(gamesDirectory, file.name))
     )
     .sort(
       /**
-       * Order files .filter( (file) => consoleByExtension.has(extname(file.name).toLowerCase()) && !getLibrar candidates deterministically before local consumes the preferred result.
+       * Order files .filter( (file) => supportedExtensions.has(extname(file.name).toLowerCase()) && !getLibrar candidates deterministically before local consumes the preferred result.
        *
        * @param {*} a - Value supplied by the enclosing operation; interpreted in this callback's local scope.
        * @param {*} b - Value supplied by the enclosing operation; interpreted in this callback's local scope.
@@ -292,17 +319,14 @@ function getLocalGames() {
     )
     .map(
       /**
-       * Project each files .filter( (file) => consoleByExtension.has(extname(file.name).toLowerCase()) && !getLibrar entry for local; preserve input ordering in the derived collection.
+       * Project each files .filter( (file) => supportedExtensions.has(extname(file.name).toLowerCase()) && !getLibrar entry for local; preserve input ordering in the derived collection.
        *
        * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
        */
       (file) => {
-        const { name, ext } = parse(file.name)
+        const { name } = parse(file.name)
         const gamePath = join(gamesDirectory, file.name)
-        const system =
-          ext.toLowerCase() === '.iso' && /psp|vice city stories/i.test(gamePath)
-            ? 'PSP'
-            : consoleByExtension.get(ext.toLowerCase())
+        const system = getLibrary().platformFor(gamePath)
         const coverName =
           fileNames.get(pathKey(`${name}.jpg`)) || fileNames.get(pathKey(`${name}.png`))
         const cover = coverName ? join(gamesDirectory, coverName) : null
@@ -316,12 +340,17 @@ function getLocalGames() {
           path: gamePath,
           system,
           systemShort: system,
+          platformOverride: getLibrary().platformOverride(gamePath),
           cover,
           backdrop: cover,
           coverUrl
         })
       }
     )
+  for (const game of scanRpcs3Games(rpcs3)) {
+    if (!getLibrary().excluded(game.path))
+      local.push(decorateGame({ ...game, coverUrl: mediaUrl(game.cover) }))
+  }
   const paths = new Set(
     local.map(
       /**
@@ -342,7 +371,7 @@ function getLocalGames() {
          *
          * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
-        (game) => !paths.has(pathKey(game.path))
+        (game) => !paths.has(pathKey(game.path)) && !isRpcs3ManagedPath(rpcs3, game.path)
       )
       .map(
         /**
@@ -482,9 +511,24 @@ async function showLaunchError(message) {
  * @param {Object} request - Launch payload or protocol Request, as specified by the surrounding handler.
  */
 async function launchGame(event, request) {
+  if (rpcs3Job) return { success: false, error: 'Wait for RPCS3 setup to finish.' }
   if (launchInProgress) return { success: false, error: 'A game is already running or launching.' }
   launchInProgress = true
   try {
+    // Resolve the authoritative disk/override platform, never route using stale renderer labels.
+    const registered = getLocalGames().find((entry) => entry.path === request?.gamePath)
+    if (registered) request = { ...request, consoleType: registered.systemShort }
+    if (request?.consoleType === 'PS3') {
+      const game = getLocalGames().find(
+        (entry) => entry.path === request.gamePath && entry.systemShort === 'PS3'
+      )
+      if (!game) return { success: false, error: 'ps3_game_missing', platform: 'PS3' }
+      const plan = rpcs3.prepareLaunch(game.path)
+      if (!plan.success)
+        return plan.error === 'rpcs3_config_failed' ? plan : { ...plan, status: rpcs3Status() }
+      // Deliberately bypass RetroArch preparation, cores, BIOS and session.cfg for PS3.
+      return await runEmulatorSession(event, plan)
+    }
     const preparationError = await retroarchPreparation
     if (preparationError) {
       return await showLaunchError(`RetroArch preparation failed: ${preparationError.message}`)
@@ -602,138 +646,150 @@ async function launchGame(event, request) {
      */
     const corePath = cores.pathFor(core)
     if (!corePath) return { success: false, error: 'missing_core', platform: consoleType }
-    // Keep the IPC request pending until exit so the UI cannot launch a second session.
-    return await new Promise(
-      /**
-       * Bridge launchGame's callback-based work into a Promise; settle it through the supplied resolve/reject functions.
-       *
-       * @param {*} resolve - Fulfill the pending operation.
-       */
-      (resolve) => {
-        // spawn takes the executable separately from its arguments; no shell quoting is needed.
-        const child = spawn(
-          executable,
-          ['-L', corePath, gamePath, '-f', '--appendconfig', config],
-          {
-            cwd: retroarchDir,
-            shell: false,
-            detached: true,
-            windowsHide: true,
-            stdio: ['ignore', 'pipe', 'pipe']
-          }
-        )
-        activeChild = child
-        child.stdout.on(
-          'data',
-          /**
-           * Handle data events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
-           *
-           * @param {*} data - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-           */
-          (data) => console.log(`[RetroArch stdout] ${data.toString()}`)
-        )
-        child.stderr.on(
-          'data',
-          /**
-           * Handle data events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
-           *
-           * @param {*} data - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-           */
-          (data) => console.log(`[RetroArch stderr] ${data.toString()}`)
-        )
-        /**
-         * Idempotence guard because error, exit, and close may all arrive for one child.
-         */
-        let finished = false
-        /**
-         * Finalize a child exactly once across error/exit/close events; stop hooks, restore Zenith, and
-         * settle the pending launch Promise.
-         *
-         * @param {string} message - User-visible result/error message; a falsy session message indicates success.
-         */
-        const finish = async (message) => {
-          if (finished) return
-          finished = true
-          activeChild = null
-          sessionBridge?.stop()
-          sessionBridge = null
-          sessionMenuOpen = false
-          globalShortcut.unregister('F10')
-          globalShortcut.unregister('Escape')
-          if (!event.sender.isDestroyed()) event.sender.send('game-stopped')
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.setAlwaysOnTop(false)
-            mainWindow.show()
-            mainWindow.restore()
-            mainWindow.focus()
-          }
-          if (!message) {
-            resolve({ success: true })
-            return
-          }
-          try {
-            resolve(await showLaunchError(message))
-          } catch {
-            resolve({ success: false, error: message })
-          }
-        }
-        child.once(
-          'spawn',
-          /**
-           * Handle spawn events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
-           */
-          () => {
-            if (!event.sender.isDestroyed()) event.sender.send('game-started')
-            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
-            sessionBridge = startSessionBridge(
-              child.pid,
-              join(__dirname, '../../resources/gamepad-bridge.ps1'),
-              openSessionMenu,
-              hotkeys,
-              mainWindow.getNativeWindowHandle()
-            )
-            globalShortcut.register('F10', openSessionMenu)
-            globalShortcut.register(
-              'Escape',
-              /**
-               * Complete the register callback step owned by launchGame; caller arguments and captured state determine this stage's result.
-               */
-              () => (sessionMenuOpen ? resumeSession() : openSessionMenu())
-            )
-          }
-        )
-        child.once(
-          'error',
-          /**
-           * Handle error events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
-           *
-           * @param {*} error - Failure from the preceding operation.
-           */
-          (error) => {
-            void finish(`RetroArch could not start: ${error.message}`)
-          }
-        )
-        /**
-         * Treat a clean exit or an intentional kill as success; route unexpected exit codes/signals
-         * through the common finalizer.
-         *
-         * @param {number|string} code - Process exit code or normalized physical key code, depending on the handler.
-         * @param {string} signal - Optional child-process termination signal.
-         */
-        const onExit = (code, signal) => {
-          void finish(
-            code === 0 || child.killed ? null : `RetroArch exited unexpectedly (${signal || code}).`
-          )
-        }
-        child.once('exit', onExit)
-        child.once('close', onExit)
-      }
-    )
+    return await runEmulatorSession(event, {
+      executable,
+      args: ['-L', corePath, gamePath, '-f', '--appendconfig', config],
+      cwd: retroarchDir,
+      label: 'RetroArch'
+    })
   } catch (error) {
     return await showLaunchError(`Game could not start: ${error.message}`)
   } finally {
     launchInProgress = false
   }
+}
+
+/**
+ * Own the common RetroArch/RPCS3 child lifecycle. Keep launch IPC pending until exit; hide Zenith
+ * only after spawn succeeds, and bind the native controller helper to this child's actual PID.
+ * @param {Object} event - Authorized launch IPC event.
+ * @param {{executable:string,args:string[],cwd:string,label:string}} plan - Main-owned launch plan.
+ */
+function runEmulatorSession(event, { executable, args, cwd, label, env }) {
+  // Keep the IPC request pending until exit so the UI cannot launch a second session.
+  return new Promise(
+    /**
+     * Bridge launchGame's callback-based work into a Promise; settle it through the supplied resolve/reject functions.
+     *
+     * @param {*} resolve - Fulfill the pending operation.
+     */
+    (resolve) => {
+      // spawn takes the executable separately from its arguments; no shell quoting is needed.
+      const child = spawn(executable, args, {
+        cwd,
+        ...(env ? { env } : {}),
+        shell: false,
+        detached: true,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      activeChild = child
+      child.stdout.on(
+        'data',
+        /**
+         * Handle data events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
+         *
+         * @param {*} data - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (data) => console.log(`[${label} stdout] ${data.toString()}`)
+      )
+      child.stderr.on(
+        'data',
+        /**
+         * Handle data events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
+         *
+         * @param {*} data - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (data) => console.log(`[${label} stderr] ${data.toString()}`)
+      )
+      /**
+       * Idempotence guard because error, exit, and close may all arrive for one child.
+       */
+      let finished = false
+      /**
+       * Finalize a child exactly once across error/exit/close events; stop hooks, restore Zenith, and
+       * settle the pending launch Promise.
+       *
+       * @param {string} message - User-visible result/error message; a falsy session message indicates success.
+       */
+      const finish = async (message) => {
+        if (finished) return
+        finished = true
+        activeChild = null
+        sessionBridge?.stop()
+        sessionBridge = null
+        sessionMenuOpen = false
+        globalShortcut.unregister('F10')
+        globalShortcut.unregister('Escape')
+        if (!event.sender.isDestroyed()) event.sender.send('game-stopped')
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.setAlwaysOnTop(false)
+          mainWindow.show()
+          mainWindow.restore()
+          mainWindow.focus()
+        }
+        if (!message) {
+          resolve({ success: true })
+          return
+        }
+        try {
+          resolve(await showLaunchError(message))
+        } catch {
+          resolve({ success: false, error: message })
+        }
+      }
+      child.once(
+        'spawn',
+        /**
+         * Handle spawn events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
+         */
+        () => {
+          if (!event.sender.isDestroyed()) event.sender.send('game-started')
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
+          sessionBridge = startSessionBridge(
+            child.pid,
+            join(__dirname, '../../resources/gamepad-bridge.ps1'),
+            openSessionMenu,
+            hotkeys,
+            mainWindow && !mainWindow.isDestroyed() ? mainWindow.getNativeWindowHandle() : undefined
+          )
+          globalShortcut.register('F10', openSessionMenu)
+          globalShortcut.register(
+            'Escape',
+            /**
+             * Complete the register callback step owned by launchGame; caller arguments and captured state determine this stage's result.
+             */
+            () => (sessionMenuOpen ? resumeSession() : openSessionMenu())
+          )
+        }
+      )
+      child.once(
+        'error',
+        /**
+         * Handle error events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
+         *
+         * @param {*} error - Failure from the preceding operation.
+         */
+        (error) => {
+          void finish(`${label} could not start: ${error.message}`)
+        }
+      )
+      /**
+       * Treat a clean exit or an intentional kill as success; route unexpected exit codes/signals
+       * through the common finalizer.
+       *
+       * @param {number|string} code - Process exit code or normalized physical key code, depending on the handler.
+       * @param {string} signal - Optional child-process termination signal.
+       */
+      const onExit = (code, signal) => {
+        void finish(
+          code === 0 || child.killed ? null : `${label} exited unexpectedly (${signal || code}).`
+        )
+      }
+      child.once('exit', onExit)
+      child.once('close', onExit)
+    }
+  )
 }
 
 /**
@@ -891,6 +947,19 @@ app.whenReady().then(
      * Return current library records with local protocol URLs without waiting for network scraping.
      */
     ipcMain.handle('get-local-games', () => getLocalGames())
+    ipcMain.handle('set-game-platform', (_event, { gameId, platform } = {}) => {
+      try {
+        if (launchInProgress || rpcs3Job) throw Error('Stop the running game or setup first.')
+        const game = guideGame(gameId)
+        if (!game || game.rpcs3Installed) throw Error('Game platform cannot be changed.')
+        getLibrary().setPlatform(game.path, platform)
+        const updated = getLocalGames().find((entry) => entry.path === game.path)
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library-changed')
+        return { success: true, game: updated }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
     /**
      * Open the native ROM picker and copy supported selections to the central library.
      */
@@ -901,9 +970,23 @@ app.whenReady().then(
           filters: GAME_FILE_FILTERS
         })
         if (selection.canceled) return { success: false, canceled: true }
-        const copied = await importGames(selection.filePaths)
+        const packages = selection.filePaths.filter(
+          (file) => extname(file).toLowerCase() === '.pkg'
+        )
+        if (packages.length) {
+          const installed = await maintainRpcs3(async (context) => {
+            for (const file of packages) {
+              await installRpcs3AndRefresh({ runtime: rpcs3, kind: 'package', file, ...context })
+            }
+            return { success: true }
+          })
+          if (!installed.success) return installed
+        }
+        const copied = await importGames(
+          selection.filePaths.filter((file) => extname(file).toLowerCase() !== '.pkg')
+        )
         getLibrary().add(copied)
-        return { success: true, count: copied.length }
+        return { success: true, count: copied.length + packages.length }
       } catch (error) {
         return { success: false, error: error.message }
       }
@@ -966,6 +1049,8 @@ app.whenReady().then(
         if (preparationError) throw preparationError
         if (launchInProgress) throw Error('Stop the running game first.')
         const game = gameId ? guideGame(gameId) : null
+        if ((game?.systemShort || platform) === 'PS3')
+          throw Error('PS3 uses standalone RPCS3, not a Libretro core.')
         if (
           gameId ? !game : !Object.hasOwn(CONSOLE_EXTENSIONS, platform) || platform === 'Unassigned'
         )
@@ -989,6 +1074,7 @@ app.whenReady().then(
      */
     ipcMain.handle('install-core', async (_event, system) => {
       try {
+        if (system === 'PS3') throw Error('PS3 uses standalone RPCS3, not a Libretro core.')
         const preparationError = await retroarchPreparation
         if (preparationError) throw preparationError
         return await cores.install(system)
@@ -999,6 +1085,54 @@ app.whenReady().then(
     /**
      * Read physical core and BIOS status for platforms currently represented in the library.
      */
+    ipcMain.handle('get-rpcs3-status', rpcs3Status)
+    ipcMain.handle('download-rpcs3', (_event, options) => {
+      if (options?.confirmed !== true) return { success: false, canceled: true }
+      return maintainRpcs3((context) => downloadRpcs3({ runtime: rpcs3, ...context }))
+    })
+    for (const [channel, kind, extension] of [
+      ['install-ps3-firmware', 'firmware', 'pup'],
+      ['install-ps3-package', 'package', 'pkg']
+    ]) {
+      ipcMain.handle(channel, () =>
+        maintainRpcs3(async (context) => {
+          const selection = await dialog.showOpenDialog(mainWindow, {
+            title:
+              kind === 'firmware' ? 'Select PS3UPDAT.PUP to install' : 'Select PS3 PKG to install',
+            properties: ['openFile'],
+            filters: [
+              {
+                name: kind === 'firmware' ? 'PS3 Firmware' : 'PS3 Package',
+                extensions: [extension]
+              }
+            ]
+          })
+          if (selection.canceled || !selection.filePaths.length)
+            return { success: false, canceled: true }
+          context.signal.throwIfAborted()
+          return installRpcs3AndRefresh({
+            runtime: rpcs3,
+            kind,
+            file: selection.filePaths[0],
+            ...context
+          })
+        })
+      )
+    }
+    ipcMain.handle('cancel-rpcs3-install', () => {
+      rpcs3Job?.controller.abort()
+      return { success: true }
+    })
+    // Fixed main-owned directory only; never open an arbitrary renderer path.
+    ipcMain.handle('open-rpcs3-folder', async () => {
+      try {
+        rpcs3.ensureDirectories()
+        const error = await shell.openPath(rpcs3.directory)
+        return error ? { success: false, error } : { success: true }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
     ipcMain.handle('get-system-status', () =>
       [
         ...new Set(
@@ -1018,6 +1152,7 @@ app.whenReady().then(
          * @param {*} platform - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
         (platform) => {
+          if (platform === 'PS3') return { platform, emulator: 'RPCS3', runtime: rpcs3Status() }
           const core = coreCatalog.get(null, platform) || cores.find(platform)
           /**
            * Physically verified absolute core path; this is the same location the installer writes and
@@ -1058,6 +1193,7 @@ app.whenReady().then(
     ipcMain.handle('get-runtime-info', () => ({
       platform: process.platform,
       retroarchDir,
+      rpcs3Directory: rpcs3.directory,
       gamesDirectory
     }))
     /**
@@ -1211,3 +1347,12 @@ app.on(
     globalShortcut.unregisterAll()
   }
 )
+
+// Wait for cancellation/rollback before closing the host of an active installer.
+app.on('before-quit', (event) => {
+  if (!rpcs3Job) return
+  event.preventDefault()
+  const pending = rpcs3Job
+  pending.controller.abort()
+  void pending.promise.finally(() => app.quit())
+})

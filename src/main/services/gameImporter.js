@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pathKey } from './platform.js'
-import { CONSOLE_EXTENSIONS } from '../../shared/consoles.js'
+import { detectGamePlatform } from './discInspector.js'
+import { CONSOLE_EXTENSIONS, detectConsole, isPS3BootPath } from '../../shared/consoles.js'
 /**
  * Supported import extensions derived from the same registry used for scanning and file-picker
  * filters.
@@ -30,6 +31,10 @@ export function createGameImporter(gamesDirectory) {
     await fs.promises.mkdir(gamesDirectory, { recursive: true })
     const imported = []
     for (const source of sources) {
+      // PS3 boot files depend on the rest of the game tree. Never copy EBOOT alone.
+      // Whole-folder import is implemented in the next RPCS3 integration stage.
+      if (isPS3BootPath(source))
+        throw Error('PS3 folder import is not available yet; keep the complete game folder intact.')
       if (
         !extensions.has(extname(source).toLowerCase()) ||
         !(await fs.promises.stat(source)).isFile()
@@ -44,12 +49,14 @@ export function createGameImporter(gamesDirectory) {
         await fs.promises.copyFile(source, temporary, fs.constants.COPYFILE_EXCL)
         const extension = extname(source)
         let stem = basename(source, extension)
-        if (
-          extension.toLowerCase() === '.iso' &&
-          /psp|vice city stories/i.test(source) &&
-          !/psp|vice city stories/i.test(stem)
-        )
-          stem += ' (PSP)'
+        if (extension.toLowerCase() === '.iso') {
+          const platform = detectGamePlatform(source)
+          if (
+            ['PS3', 'PSP', 'PS2'].includes(platform) &&
+            detectConsole(basename(source)) !== platform
+          )
+            stem += ` (${platform})`
+        }
         for (let n = 0; ; n++) {
           const destination = join(gamesDirectory, stem + (n ? ' (' + n + ')' : '') + extension)
           try {

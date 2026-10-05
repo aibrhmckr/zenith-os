@@ -1,5 +1,6 @@
 /* eslint-disable react/prop-types -- Internal settings panel. */
 import { useEffect, useState } from 'react'
+import Rpcs3Status from './Rpcs3Status'
 import HotkeySetting from './HotkeySetting'
 import ConsoleDropdown from './ConsoleDropdown'
 import { useI18n } from '../hooks/i18n'
@@ -188,105 +189,114 @@ export default function SystemSettings({
                *
                * @param {*} system - Value supplied by the enclosing operation; interpreted in this callback's local scope.
                */
-              (system) => (
-                <div
-                  key={system.platform}
-                  data-core-platform={system.platform}
-                  className="rounded-xl border border-white/10 p-4"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <strong>{system.platform}</strong>
-                    <span
-                      className={
-                        system.core && system.bios.ready ? 'text-emerald-300' : 'text-amber-200'
-                      }
-                    >
-                      {t(system.core && system.bios.ready ? 'ready' : 'missing')}
-                    </span>
+              (system) =>
+                system.emulator === 'RPCS3' ? (
+                  <div
+                    key={system.platform}
+                    data-core-platform="PS3"
+                    className="rounded-xl border border-white/10 p-4"
+                  >
+                    <Rpcs3Status status={system.runtime} />
                   </div>
-                  <p className="my-2 text-xs text-white/50">
-                    {t('core')}: {system.core || t('missing')}
-                    {system.bios.required
-                      ? ' · BIOS: ' +
-                        (system.bios.ready ? t('ready') : system.bios.missing.join(', '))
-                      : ''}
-                  </p>
-                  <p className="mb-3 break-all text-xs text-white/50">
-                    {system.corePath || system.coreDirectory}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {!system.core && (
+                ) : (
+                  <div
+                    key={system.platform}
+                    data-core-platform={system.platform}
+                    className="rounded-xl border border-white/10 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <strong>{system.platform}</strong>
+                      <span
+                        className={
+                          system.core && system.bios.ready ? 'text-emerald-300' : 'text-amber-200'
+                        }
+                      >
+                        {t(system.core && system.bios.ready ? 'ready' : 'missing')}
+                      </span>
+                    </div>
+                    <p className="my-2 text-xs text-white/50">
+                      {t('core')}: {system.core || t('missing')}
+                      {system.bios.required
+                        ? ' · BIOS: ' +
+                          (system.bios.ready ? t('ready') : system.bios.missing.join(', '))
+                        : ''}
+                    </p>
+                    <p className="mb-3 break-all text-xs text-white/50">
+                      {system.corePath || system.coreDirectory}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {!system.core && (
+                        <button
+                          data-install-core={system.platform}
+                          disabled={busy}
+                          className="console-button"
+                          onClick={
+                            /**
+                             * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
+                             */
+                            () =>
+                              run(
+                                /**
+                                 * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
+                                 */
+                                () => window.electronAPI.installCore(system.platform)
+                              )
+                          }
+                        >
+                          {t('install')}
+                        </button>
+                      )}
                       <button
-                        data-install-core={system.platform}
+                        data-browse-cores={system.platform}
                         disabled={busy}
                         className="console-button"
                         onClick={
                           /**
                            * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
                            */
-                          () =>
-                            run(
-                              /**
-                               * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
-                               */
-                              () => window.electronAPI.installCore(system.platform)
-                            )
+                          () => onBrowseCores(system.platform)
                         }
                       >
-                        {t('install')}
+                        {t('browseCores')}
                       </button>
-                    )}
-                    <button
-                      data-browse-cores={system.platform}
-                      disabled={busy}
-                      className="console-button"
-                      onClick={
-                        /**
-                         * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
-                         */
-                        () => onBrowseCores(system.platform)
-                      }
-                    >
-                      {t('browseCores')}
-                    </button>
-                    {system.bios.required && system.bios.ready && (
-                      <button
-                        data-delete-bios={system.platform}
-                        disabled={busy}
-                        className="console-button text-rose-200"
-                        onClick={
-                          /**
-                           * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
-                           */
-                          () => onDeleteBios(system.platform)
-                        }
-                      >
-                        {t('deleteBios')}
-                      </button>
-                    )}
-                    {system.bios.required && (
-                      <button
-                        disabled={busy}
-                        className="console-button"
-                        onClick={
-                          /**
-                           * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
-                           */
-                          () =>
-                            run(
-                              /**
-                               * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
-                               */
-                              () => window.electronAPI.uploadBios(system.platform)
-                            )
-                        }
-                      >
-                        {t('uploadBios')}
-                      </button>
-                    )}
+                      {system.bios.required && system.bios.ready && (
+                        <button
+                          data-delete-bios={system.platform}
+                          disabled={busy}
+                          className="console-button text-rose-200"
+                          onClick={
+                            /**
+                             * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
+                             */
+                            () => onDeleteBios(system.platform)
+                          }
+                        >
+                          {t('deleteBios')}
+                        </button>
+                      )}
+                      {system.bios.required && (
+                        <button
+                          disabled={busy}
+                          className="console-button"
+                          onClick={
+                            /**
+                             * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
+                             */
+                            () =>
+                              run(
+                                /**
+                                 * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
+                                 */
+                                () => window.electronAPI.uploadBios(system.platform)
+                              )
+                          }
+                        >
+                          {t('uploadBios')}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )
+                )
             )}
           </div>
         </>

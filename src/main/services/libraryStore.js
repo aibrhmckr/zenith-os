@@ -2,29 +2,11 @@ import fs from 'node:fs'
 import { resolve, join, extname, basename, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { pathKey } from './platform.js'
+import { detectGamePlatform } from './discInspector.js'
 import { CONSOLE_EXTENSIONS } from '../../shared/consoles.js'
 
-/**
- * Reverse extension lookup for imported ROMs, sharing the scanner platform registry.
- */
-const systems = new Map(
-  Object.entries(CONSOLE_EXTENSIONS).flatMap(
-    /**
-     * Expand Object.entries(CONSOLE_EXTENSIONS) entries for systems, flattening each result into the shared lookup/list.
-     *
-     * @param {*} input1 - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-     */
-    ([system, exts]) =>
-      exts.map(
-        /**
-         * Project each exts entry for systems; preserve input ordering in the derived collection.
-         *
-         * @param {*} ext - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-         */
-        (ext) => [ext, system]
-      )
-  )
-)
+/** Accepted import extensions; shared detection resolves ISO and structured EBOOT paths. */
+const systems = new Set(Object.values(CONSOLE_EXTENSIONS).flat())
 /**
  * Load the imported/excluded path registry from library.json. Keep this registry separate from
  * the scraper's games.json media manifest.
@@ -61,6 +43,23 @@ export function createLibraryStore(userData) {
    * @param {*} value - Input value being normalized, displayed, or committed by this helper.
    */
   const key = (value) => pathKey(resolve(value))
+  const overrides = new Map(
+    Object.entries(state.platforms || {}).filter(([, platform]) =>
+      Object.hasOwn(CONSOLE_EXTENSIONS, platform)
+    )
+  )
+  /** Persist only allowlisted platform codes, keyed by canonical library file path. Null resets auto. */
+  const setPlatform = (file, platform) => {
+    if (platform !== null && !Object.hasOwn(CONSOLE_EXTENSIONS, platform))
+      throw Error('Unsupported platform.')
+    if (platform === null) overrides.delete(key(file))
+    else overrides.set(key(file), platform)
+    state.platforms = Object.fromEntries(overrides)
+    save()
+  }
+  const platformOverride = (file) => overrides.get(key(file)) || null
+  const platformFor = (file) => platformOverride(file) || detectGamePlatform(file)
+
   /**
    * Check whether the normalized ROM path was removed from the library.
    *
@@ -146,10 +145,8 @@ export function createLibraryStore(userData) {
          * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
         (file) => {
-          const fileName = basename(file),
-            ext = extname(file).toLowerCase()
-          const systemShort =
-            ext === '.iso' && /psp|vice city stories/i.test(file) ? 'PSP' : systems.get(ext)
+          const fileName = basename(file)
+          const systemShort = platformFor(file)
           const importKey = createHash('sha256').update(key(file)).digest('hex').slice(0, 16)
           const stem = basename(file, extname(file))
           const cover =
@@ -178,11 +175,12 @@ export function createLibraryStore(userData) {
             path: file,
             system: systemShort,
             systemShort,
+            platformOverride: platformOverride(file),
             cover,
             backdrop: cover,
             imported: true
           }
         }
       )
-  return { add, remove, list, excluded }
+  return { add, remove, list, excluded, setPlatform, platformFor, platformOverride }
 }

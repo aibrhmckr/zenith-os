@@ -6,11 +6,17 @@ files:
   - out/**/*
   - package.json
   - resources/icon.png
+  - resources/licenses/**
   - resources/gamepad-bridge.ps1
   - resources/gamepad-bridge.py
   - '!**/*.{dll,DLL,so,SO,bin,BIN,iso,ISO,chd,nds,gba,mp3,mp4,pdf,log,part}'
+  # Runtime/firmware never ship, even when placed accidentally below an allowed folder.
+  - '!**/{rpcs3,RPCS3,dev_flash,dev_flash2,dev_flash3,dev_hdd0,dev_hdd1,PS3_GAME}/**'
+  - '!**/*.{[pP][uU][pP],[pP][kK][gG],[rR][aA][pP],[rR][iI][fF],[sS][eE][lL][fF],[sS][pP][rR][xX]}'
+  - '!**/rpcs3*.{exe,EXE,AppImage}'
 asarUnpack:
   - resources/**
+  - node_modules/7zip-bin/**
 beforePack: scripts/validate-emulators.cjs
 extraResources:
   - from: emulators/retroarch
@@ -20,6 +26,9 @@ extraResources:
       - '!**/*.log'
       - '!**/.gitkeep'
       - '!cores/**'
+      - '!**/{rpcs3,RPCS3,portable,dev_flash,dev_flash2,dev_flash3,dev_hdd0,dev_hdd1,PS3_GAME}/**'
+      - '!**/*.{[pP][uU][pP],[pP][kK][gG],[rR][aA][pP],[rR][iI][fF],[sS][eE][lL][fF],[sS][pP][rR][xX]}'
+      - '!**/rpcs3*.{exe,EXE,AppImage}'
       # A development installation can contain private BIOS and user data.
       - '!{system,saves,states,screenshots,thumbnails,records,recordings,config,cheats,downloads,playlists,logs,cache,media,games,roms}{,/**/*}'
       - '!**/*.{iso,ISO,bin,BIN,chd,CHD,rom,ROM,log,LOG,part,tmp,srm,state,lpl}'

@@ -291,6 +291,16 @@ emulators/*
 *.[cC][cC][dD]
 *.[nN][rR][gG]
 *.[pP][rR][xX]
+# PS3 packages, firmware, executable images and per-title license files.
+*.[pP][kK][gG]
+*.[pP][uU][pP]
+*.[rR][aA][pP]
+*.[rR][iI][fF]
+*.[sS][eE][lL][fF]
+*.[sS][pP][rR][xX]
+[pP][sS]3_[gG][aA][mM][eE]/
+[dD][eE][vV]_[fF][lL][aA][sS][hH]/
+[dD][eE][vV]_[hH][dD][dD]0/
 *.[vV][pP][kK]
 *.[sS][gG]
 *.[mM][dD][xX]

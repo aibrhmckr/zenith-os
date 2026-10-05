@@ -12,11 +12,14 @@ executable. Linux uses `userData/games/`, including during development, to avoid
 writing to read-only AppImage mounts or `/opt`. Select **Scan library** to detect
 new files.
 
-Supported platforms include PS2, PS1, PSP, NDS, GBA, GBC, GameCube, Wii, N64, SNES,
-NES, 3DS, Genesis, Dreamcast, Atari 2600, Atari 7800, and Atari Lynx. An `.iso` file
-is identified as PSP when its filename or full path contains `PSP` (for example,
-`(PSP)`) or `Vice City Stories`; other ISO files default to PS2. Platform hints and
-file extensions are matched without regard to case. Subdirectories are not scanned.
+Supported platforms include PS3, PS2, PS1, PSP, NDS, GBA, GBC, GameCube, Wii, N64, SNES,
+NES, 3DS, Genesis, Dreamcast, Atari 2600, Atari 7800, and Atari Lynx. ISO classification inspects bounded disc metadata for PS3_GAME/PSP_GAME,
+PS3 system headers, and PS2/PS1 SYSTEM.CNF boot entries. Explicit PS3 filename/path
+hints take precedence over automatic inspection; PSP and PS2 hints remain fallbacks.
+Unrecognized ISO files default to PS3. **Game Options (Q) → Change Platform**
+saves a per-game override; **Auto Detect** removes it. Manual choices survive rescans
+and restarts. Launch routing uses the current library platform rather than a stale
+renderer label. Generic ROM subdirectories are not scanned.
 
 For local artwork, use the same base name as the ROM: `games/Game.iso` with
 `games/Game.jpg` or `games/Game.png`. JPG takes precedence when both exist. The
@@ -586,6 +589,22 @@ No PowerShell process or system security-policy change is required. Cores remain
 excluded from electron-builder packages; this process runs when the installed
 application downloads a core.
 
+## PlayStation 3 / RPCS3 Setup
+
+RPCS3 is a standalone runtime under `userData/emulators/rpcs3/`.
+From the RPCS3 status panel, Windows x64 users can confirm an on-demand download
+from the official RPCS3 GitHub releases. Archives are SHA-256 checked and tested
+before publication. Linux currently requires manual runtime installation.
+Use **Install PS3 Firmware** to select your legally obtained Sony PS3UPDAT.PUP,
+or **Install PS3 Package** for a local PKG. Installation uses the official headless
+--installfw / --installpkg commands. Firmware success follows physical dev_flash
+validation even if RPCS3 crashes during teardown; PKG also requires fresh success logs.
+Neither firmware nor RPCS3 is bundled. PKG installation automatically discovers
+bootable titles in the managed dev_hdd0/game directory. Add Game also accepts PKG
+installation inputs; Rescan discovers games installed directly through RPCS3.
+Installed titles display their PARAM.SFO name and launch their original EBOOT.BIN. See [RPCS3 integration](RPCS3_INTEGRATION.md)
+for paths, limits, IPC contracts and supported launch targets.
+
 ## Legal Disclaimer
 
 Zenith OS is an open-source launcher and frontend interface designed for library management and emulator automation. Zenith OS does not contain, distribute, or promote any copyrighted ROMs, ISOs, game assets, or proprietary console BIOS dumps. Users are solely responsible for providing their own legally dumped games and BIOS files.
@@ -595,3 +614,6 @@ Zenith OS is an open-source launcher and frontend interface designed for library
 - **RetroArch & libretro:** This project utilizes the open-source RetroArch frontend under the GNU General Public License v3.0 (GPL-3.0). RetroArch and the libretro ecosystem are developed and maintained by the Libretro team and contributors; individual emulation cores also have their own upstream developers and licenses. Visit [RetroArch](https://www.retroarch.com) and [Libretro on GitHub](https://github.com/libretro) for source code and documentation.
 - Core binaries are not bundled with releases and are downloaded on-demand directly by the user.
 - See the [RetroArch GPL v3 license](https://github.com/libretro/RetroArch/blob/master/COPYING) and [Libretro license inventory](https://docs.libretro.com/development/licenses/) for upstream terms. Releases that include RetroArch must preserve its license notices and provide access to the corresponding source for the distributed version in accordance with GPL v3; these attribution links alone do not replace those obligations.
+
+- **RPCS3:** Downloaded only after user consent from [official releases](https://github.com/RPCS3/rpcs3-binaries-win/releases). See the [upstream source and license](https://github.com/RPCS3/rpcs3). Sony firmware and game packages remain user-provided.
+- **7-Zip extraction helper:** The 7zip-bin wrapper uses MIT; its bundled Windows 7za 21.07 uses upstream 7-Zip license terms. Included notices and LGPL text are in [resources/licenses](resources/licenses); [7-Zip 21.07 source](https://github.com/ip7z/7zip/tree/21.07) and [helper build sources](https://github.com/develar/7zip-bin) are available upstream. Preserve notices and satisfy corresponding-source obligations when distributing this helper.

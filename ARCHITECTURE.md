@@ -169,11 +169,11 @@ mevcut değildir; bu sorumluluklar bugün `index.js` içindedir. `bgm.js` yerine
 
 ### Preload ve paylaşılan model
 
-| Dosya                    | Sorumluluk                                                                                                                                                                                                                                         |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/preload/index.js`   | Uygulama invoke metotları ve unsubscribe döndüren event abonelikleri. Tam metot/parametre listesi bölüm 3'tedir. `window.api` boş, `window.electronAPI` gerçek uygulama API'si, `window.electron` toolkit köprüsüdür.                              |
-| `src/shared/consoles.js` | Konsol–uzantı tablosu ve iki dosya seçici filtresi. Importer, scanner, library ve renderer aynı tabloyu kullanır. ISO PS2 varsayılanı; PSP adı/yolu tarayıcıda override. SMD→Genesis, V64→N64, A26/A78/LNX→Atari; BIN/ROM/ATX/ZIP/7z `Unassigned`. |
-| `src/shared/hotkeys.js`  | Varsayılan `[8,9]`, klavye default `[]` (Esc/F10); tuş adı/Windows sanal kod dönüşümü, farklı iki tuş doğrulaması ve `createGamepadHotkey`. Modalda tüketilen basışın bırakılma eylemini ana ekrana sızdırmaz.                                     |
+| Dosya                    | Sorumluluk                                                                                                                                                                                                                                                                               |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/preload/index.js`   | Uygulama invoke metotları ve unsubscribe döndüren event abonelikleri. Tam metot/parametre listesi bölüm 3'tedir. `window.api` boş, `window.electronAPI` gerçek uygulama API'si, `window.electron` toolkit köprüsüdür.                                                                    |
+| `src/shared/consoles.js` | Konsol–uzantı tablosu ve iki dosya seçici filtresi. Importer, scanner, library ve renderer aynı tabloyu kullanır. Saf isim/uzantı ipuçları; Main discInspector ve kalıcı oyun seçimi nihai platformu belirler. SMD→Genesis, V64→N64, A26/A78/LNX→Atari; BIN/ROM/ATX/ZIP/7z `Unassigned`. |
+| `src/shared/hotkeys.js`  | Varsayılan `[8,9]`, klavye default `[]` (Esc/F10); tuş adı/Windows sanal kod dönüşümü, farklı iki tuş doğrulaması ve `createGamepadHotkey`. Modalda tüketilen basışın bırakılma eylemini ana ekrana sızdırmaz.                                                                           |
 
 ### Renderer girişleri ve tüm bileşenler
 
@@ -825,6 +825,204 @@ installer dışında kaldığından işlem builder hook'unda değil, kullanıcı
 veya App core panelinde görünür; başarılı kurulum sonrasında fiziksel durum yeniden
 okunur. `tests/core-verification.test.mjs`, `tests/core-download.cjs` ve
 `tests/platform.test.mjs` bu sınırları ve Windows/Linux ayrımını kapsar.
+
+## 10. Bağımsız RPCS3 oturumu (PS3)
+
+PS3, `launch-game` içinde RetroArch hazırlığına girmeden ayrılır. Main kütüphane
+üyeliğini doğrular; `services/rpcs3Runtime.js` çalıştırılabilir dosyayı ve kurulu
+firmware işaretlerini fiziksel olarak denetler. Eksik kurulumda spawn edilmez.
+Çalıştırma planı mutlak executable/oyun yolu, `--no-gui`, sabit cwd ve shell:false
+kullanır. Runtime her ortamda `userData/emulators/rpcs3`, profil `portable/`
+altındadır; RPCS3 veya firmware paket kaynaklarına eklenmez.
+
+`runEmulatorSession` artık iki emülatörün child yaşam döngüsünü yönetir.
+`sessionBridge.js` ve Windows `gamepad-bridge.ps1` değişmeden gerçek RPCS3 PID'sini
+izler. View+Menu → kiosk/always-on-top → Zenith menüsü; devam et → native resume;
+çıkış/error → tek seferlik temizleme zinciri korunur. RPCS3 için otomatik duraklama
+varsayılmaz. RetroArch session.cfg bayrakları RPCS3'e uygulanmaz.
+
+Yeni `get-rpcs3-status` / `getRpcs3Status()` IPC'si diskten okunan runtime durumunu,
+`open-rpcs3-folder` / `openRpcs3Folder()` ise sabit kurulum klasörünü açma sonucunu
+döndürür. `get-system-status` PS3 için `{platform,emulator:'RPCS3',runtime}`
+varyantını döndürür; diğer konsolların core/bios sözleşmesi değişmez.
+`get-runtime-info` yanıtına `rpcs3Directory` eklenmiştir.
+
+`Rpcs3Status.jsx`, App kurulum modalında ve SystemSettings içinde ortak kullanılır;
+yeniden kontrol ve aynı oyunu tekrar başlatma sağlar. `js-yaml` doğrudan üretim
+bağımlılığıdır; sınırlı boyuttaki RPCS3 VFS ayarını okuyarak firmware kontrolünün
+emülatörün kullandığı dizini denetlemesini sağlar. Readiness tam dosya bütünlüğü
+veya oyun uyumluluğu garantisi değildir.
+
+Kurulum adımları, tam IPC hata sözlüğü, dosya envanteri ve sonraki işler:
+[RPCS3_INTEGRATION.md](RPCS3_INTEGRATION.md). Yeni testler:
+`tests/rpcs3.test.mjs` ve `tests/rpcs3-launcher.cjs`; `npm run test:rpcs3`.
+Firmware/PKG kurulumu ve kurulu PS3 oyunlarının otomatik keşfi desteklenir.
+Harici disk oyunu klasörünün bütünüyle içe aktarılması ayrı bir iştir.
+
+### Kurulu PS3 oyunları: keşif, içe aktarma ve başlatma
+
+- **services/rpcs3Library.js — scanRpcs3Games(runtime):** getLocalGames her çağrıldığında
+  runtime.dataDirectory('dev_hdd0')/game altındaki TITLE_ID dizinlerini tek seviyede
+  tarar. Varsayılan userData/emulators/rpcs3/portable/dev_hdd0/game yoludur; yönetilen
+  runtime içindeki özel VFS eşlemeleri de kullanılır. Dış VFS, symlink/junction ve
+  hatalı/eksik başlıklar atlanır; firmware veya tüm oyun verileri belleğe okunmaz.
+- **readParamSfo(bytes):** en fazla 1 MiB/1024 kayıt için PSF 1.01 little-endian
+  tablo sınırlarını, anahtar sonlandırıcılarını ve yinelenen anahtarları doğrular.
+  TITLE, TITLE_ID ve CATEGORY okunur; klasör kimliği SFO ile eşleşmelidir.
+  HG/DG kategorisi ve boş olmayan düzenli USRDIR/EBOOT.BIN gerekir. GD güncelleme/
+  oyun verisi klasörleri veya DLC tek başına oyun kartı oluşturmaz.
+- **Kayıt ve medya:** PS3 kayıtlarının path alanı mutlak EBOOT yoludur; oyun adı
+  SFO'dan, isteğe bağlı kapak ICON0.PNG'den gelir. scraper.enrich, EBOOT adını oyun
+  adıyla değiştirmez; SFO başlığını korur. TITLE_ID ve yol kimliği medya kimliğini
+  sabit tutar; aynı isimli bölge sürümleri karışmaz. games.json, taramada oyun adı,
+  titleId ve EBOOT yolunu kaydeder. Başlık güncellenirse kimlik korunur.
+- **Birleştirme:** getLocalGames kurulu kayıtları merkezi ROM listesine ekler,
+  eski import referanslarını yol üzerinden tekilleştirir ve hariç tutulan/silinen
+  kayıtları gizler. Dosyası kaybolan veya geçersizleşen yönetilen oyun, library.json
+  içinde eski referansı kalsa da görünmez. RPCS3 diski kaynak kabul edilir; başlangıç
+  taraması yeniden keşfettiğinden geçici belleğe bağımlı kayıt oluşmaz.
+- **PKG akışı:** Rpcs3Status panelindeki install-ps3-package ve Add Game içinde
+  seçilen PKG aynı installRpcs3AndRefresh yolunu kullanır. Başarılı kurulumdan sonra
+  eşleşen oyun yolu kaydedilir, yeniden kurulum varsa exclusion kaldırılır ve Main
+  library-changed bildirimi gönderir. Add Game PKG'yi games dizinine kopyalamaz;
+  kaynak paketi değiştirmeden mevcut headless kurulum hattına verir. Diğer ROM/ISO
+  seçimlerinin merkezi kopyalama davranışı korunur. Veri-only paketler kurulabilir
+  fakat başlatılabilir oyun yoksa kart eklenmez.
+- **IPC/React:** library-changed olayı payload taşımaz; preload.onLibraryChanged(cb)
+  unsubscribe döndürür. useGameLibrary bunu dinleyerek refresh(false) çağırır,
+  önce yerel kayıtları gösterir, sonra mevcut medya taramasını çalıştırır. Normal
+  Kütüphaneyi Tara ve ilk açılış aynı getLocalGames hattını kullanır.
+- **Başlatma:** launch-game EBOOT yolunu güncel kütüphaneden yetkilendirir;
+  rpcs3Runtime.prepareLaunch fiziksel runtime/firmware/oyun denetiminden sonra
+  spawn(absoluteRpcS3, ['--no-gui', absoluteEboot], {cwd: runtimeDirectory, shell:false})
+  planını verir. PKG doğrudan boot edilmez; EBOOT başka dizine kopyalanmaz.
+- **Silme sınırı:** mevcut silme akışı kurulu RPCS3 başlığını kütüphaneden hariç
+  tutup Zenith medya önbelleğini temizler; dev_hdd0 içindeki kurulu oyun ve save
+  verilerini fiziksel olarak silmez. RPCS3 başlık kaldırma ayrı bir işlemdir.
+
+Testler: tests/rpcs3-library.test.mjs SFO/UTF-8, bozuk tablolar, eksik EBOOT,
+GD, kimlik kararlılığı, VFS sınırı ve junction durumlarını; rpcs3-launcher.cjs
+PKG → otomatik kart, tekrar kurulum, Add Game PKG, manuel tarama ve gerçek
+EBOOT argümanı akışını sentetik dosyalar/sahte RPCS3 süreciyle kapsar.
+SFO biçimi için [RPCS3 PSF kaynağı](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/Loader/PSF.cpp)
+esas alınmıştır.
+
+### RPCS3 on-demand kurulum hattı
+
+| Dosya                     | Sorumluluk                                                                                                                                                                       |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| services/rpcs3Download.js | Resmi GitHub latest API, Windows x64 MSVC arşivi, stream/size/SHA-256, 7-Zip listeleme + test + çıkarma, güvenli yollar, MOTW temizliği, exe en son yayınlama ve hata geri alma. |
+| services/rpcs3Content.js  | Native picker girdisinin başlık/boyut kontrolü, özel geçici kopya, headless PUP/PKG kurulumu, güncel log + fiziksel sonuç doğrulaması ve cleanup.                                |
+| index.js:maintainRpcs3    | Tek AbortController/iş kilidi, launch ile karşılıklı dışlama, ilerleme olayı, iptal ve before-quit cleanup bekleme.                                                              |
+| preload/index.js          | Dar kurulum IPC köprüleri; renderer keyfi yol/URL/komut gönderemez.                                                                                                              |
+| Rpcs3Status.jsx           | Açık indirme onayı, ilerleme, hata, dosya seçimi, iptal ve gerçek durumla yeniden denetim.                                                                                       |
+| resources/licenses/       | Dağıtılan 7-Zip çıkarıcı yardımcısının upstream lisans metinleri ve kaynak bağlantıları.                                                                                         |
+
+| IPC / preload                                             | İstek                                  | Sonuç                                                                            |
+| --------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------- |
+| download-rpcs3 / downloadRpcs3(confirmed)                 | {confirmed:true}; diğer değerler iptal | {success,status,version?} veya {success:false,error,status}; yalnız Windows x64. |
+| install-ps3-firmware / installPs3Firmware()               | yok; PUP seçici Main'de                | {success,status,titleId:null}, canceled veya error.                              |
+| install-ps3-package / installPs3Package()                 | yok; PKG seçici Main'de                | {success,status,titleId}, canceled veya error.                                   |
+| cancel-rpcs3-install / cancelRpcs3Install()               | yok                                    | {success:true}; çalışan iş abort edilir, cleanup bitince kilit açılır.           |
+| rpcs3-install-progress / onRpcs3InstallProgress(callback) | Main → renderer                        | {phase,received?,total?} veya null; unsubscribe döner.                           |
+| get-rpcs3-status                                          | yok                                    | Fiziksel duruma hostPlatform ve operation eklenir.                               |
+
+Resmi indirme kaynağı: https://api.github.com/repos/RPCS3/rpcs3-binaries-win/releases/latest.
+Arşiv SHA-256 özeti yoksa indirme reddedilir. Metadata 15 saniye/2 MiB; tüm iş 10 dakika;
+arşiv 200 MiB, açılmış içerik 2 GiB/20.000 kayıt; her 7-Zip komutu 120 saniye ile sınırlıdır.
+Yeni indirilmiş doğrulanmış dosyaların Zone.Identifier akışı kaldırılır; mevcut
+manuel dosyaların işareti veya Windows güvenlik politikası değiştirilmez.
+7zip-bin üretim bağımlılığıdır, ASAR dışında açılır; RPCS3 pakete gömülmez.
+
+Kurulum komutları resmi kaynakta --headless --installfw ve --headless --installpkg'dir.
+--install-firmware / --install-pkg kullanılmaz; --no-gui kurulum modunu reddeder.
+Kurulum 30 dakika ile sınırlı; PUP 2 GiB, PKG 64 GiB üst sınırına sahiptir.
+Firmware için child kapandıktan sonra dev_flash içindeki sürüm ve zorunlu sistem
+modülü fiziksel olarak doğrulanır. Dosyalar geçerliyse teardown çökmesi/çıkış kodu
+(ör. 3221226505) veya eksik başarı logu sonucu başarısız yapmaz; UI hatası temizlenir.
+Geçerli firmware yoksa sıfır çıkışta da hata döner. Spawn hatası, timeout ve açık
+iptal başarıya çevrilmez. PKG için sıfır çıkış + yeni başarı logu + PARAM.SFO
+kontrolü korunur; eski log doğrulamada kullanılamaz. Kaynak PUP/PKG
+kullanıcının seçtiği yerde korunur; özel staging kopyaları temizlenir. Firmware
+indirilmez, lisans/RAP sağlanmaz. Hatalı veya iptal edilen firmware/PKG kurulumu
+kısmi içerik bırakabilir; durum yeniden denetlenir ve tekrar kurulum gerekir.
+İkili indirmedeki rollback, firmware/PKG değişiklikleri için geçerli değildir.
+
+Kurulum VFS hedefi yönetilen runtime içinde olmalıdır; dış hedef veya link reddedilir.
+Panel kapansa da iş sürer; yeniden açılınca operation alanı ilerlemeyi gösterir.
+Testler: rpcs3-install.test.mjs (sentetik gerçek 7z + sahte CLI), rpcs3-launcher.cjs
+(gerçek Electron/React, sahte süreç), distribution.test.mjs (karma harfli PS3
+uzantıları ve yeniden adlandırılmış firmware imzaları). Gerçek RPCS3/firmware ve
+donanım üzerinde kurulum uyumluluğu bu testlerle kanıtlanmaz.
+
+### ISO disk incelemesi ve manuel platform seçimi
+
+- services/discInspector.js, ISO'yu mount/çıkarma yapmadan açar. 0x800 sistem
+  başlığı, en fazla 32 ISO9660 tanımlayıcısı, en fazla 1 MiB kök dizin ve 64 KiB
+  SYSTEM.CNF okunur. PS3_GAME/PSP_GAME dizin kayıtları, PS3 sistem kimliği ve
+  BOOT2/BOOT anahtarları platform kanıtıdır. Salt payload içindeki rastgele PS3_GAME
+  metni kanıt sayılmaz. Yol + boyut + mtime/ctime önbelleği değişen dosyada yenilenir.
+- Öncelik: library.json içindeki manuel platform → açık PS3 adı/yolu → disk
+  kanıtı → PSP/PS2 adı/yolu → PS3 varsayılanı. Bozuk/okunamayan veya yalnız UDF
+  içeren ISO için bu sınırlı okuyucu kesin tespit yapamayabilir; kullanıcı platformu
+  elle seçebilir. RPCS3'ün oyunu çalıştırabilmesi ayrıca disk geçerliliğine bağlıdır.
+- libraryStore.platformFor/platformOverride/setPlatform, merkezi ve harici import
+  kayıtlarında aynı politikayı uygular. Seçim normalize edilmiş mutlak yol anahtarı
+  ile library.json/platforms içinde saklanır. null Otomatik Algıla anlamındadır.
+  gameImporter, kopyalama sırasında kaybolabilecek PS3/PSP/PS2 ipuçlarını korur.
+- set-game-platform IPC payload: {gameId,platform:string|null}; Main güncel kayıt,
+  izinli konsol kodu ve boşta oturum koşulunu doğrular. Yanıt {success:true,game}
+  veya {success:false,error}; preload.setGamePlatform(gameId,platform) köprüsüdür.
+  Kurulu RPCS3 EBOOT kayıtlarının sabit PS3 platformu bu menüyle değiştirilemez.
+- Oyun Seçenekleri Q (eski O kısayolu da korunur) içinde Platformu Değiştir açılır.
+  ConsoleModal'ın 2D gezinme/odak kilidi ile platform ya da Otomatik Algıla seçilir.
+  Kaydetme library-changed olayıyla kütüphaneyi yeniler; aktif filtre ALL'a döner.
+- launchGame renderer'ın consoleType alanı yerine diskteki güncel kütüphane
+  platformunu esas alır. PS3 ISO doğrudan mutlak yoluyla RPCS3 --no-gui argümanıdır;
+  RetroArch/PCSX2 hazırlığına girmez. Yanlış renderer etiketi PS3 oyununu PCSX2'ye
+  yönlendiremez. Platform değişince scraper platform kimliği de yeniden hesaplanır.
+- Testler: disc-inspector.test.mjs sentetik disk kayıtları, başlık, taşan offset,
+  bilinmeyen ISO varsayılanı, yeniden başlatmada kalıcı seçim ve importu kapsar.
+  rpcs3-launcher.cjs, Blur (USA).iso için içerik tespiti, Q menüsünden düzeltme ve
+  eski PS2 etiketiyle yapılan isteğin RPCS3 yolunda kalmasını doğrular.
+
+### RPCS3 kontrolcü ve kalıcı derleme önbelleği
+
+- `services/rpcs3Config.js`, fiziksel oyun/runtime/firmware kontrolünden sonra
+  `rpcs3Runtime.prepareLaunch` tarafından, child spawn edilmeden önce çağrılır.
+  Yeni IPC yoktur: mevcut `launch-game` başarısızlık sözleşmesi
+  `rpcs3_config_failed` kodunu ve teknik `message` alanını taşıyabilir. Bu hata
+  Ready kurulum panelini açmak yerine EN/TR çevrilmiş hata mesajıyla gösterilir.
+- Güncel RPCS3 Windows profili `userData/emulators/rpcs3/portable/config/`;
+  Linux profili `portable/` dizinidir. Global `config.yml` burada güncellenir.
+  Eski Windows `portable/config.yml` varsa ve yeni dosya yoksa mevcut değerleri
+  yeni konuma aktarılır; orijinal dosya korunur.
+- Windows `input_configs/active_input_configurations.yml` içindeki aktif global
+  profil kullanılır. Profil yoksa RPCS3 gibi `global/Default.yml` seçilir.
+  Player 1 eksik/Null/Keyboard ise XInput, XInput Pad #1 ve Xbox tuş/analog
+  eşlemeleri yazılır. Start+Back PS tuşuna eklenmez; Zenith çıkış kombinasyonu ile
+  çakışmaz. Diğer oyuncular ve var olan XInput/DualShock/DualSense/SDL profilleri
+  korunur. Bu bir cihaz tarayıcısı değildir; farklı XInput slotu veya Sony kolu
+  RPCS3 profilinden seçilebilir. Linux'ta Windows'a özgü XInput yazılmaz.
+- Core: PPU/SPU Decoder = Recompiler (LLVM), LLVM Precompilation = true,
+  SPU Cache = true. Video: Shader Mode = Async Recompiler (multi-threaded),
+  Disable On-Disk Shader Cache = false. Diğer ayarlar korunur. RPCS3'ün özel
+  oyun profilleri global ayarları ezebilir; bu profiller değiştirilmez.
+- PPU diske derleme önbelleği LLVM tarafından yönetilir; uydurma bir PPU Cache
+  YAML anahtarı eklenmez. Windows cache kökü portable, Linux cache kökü mevcut
+  XDG_CACHE_HOME üzerinden runtime/cache/rpcs3 olarak kalır. Başlatma kodu hiçbir
+  önbelleği temizlemez. İlk derleme, yeni shader'lar ve sürüm/sürücü/oyun değişimi
+  yeniden derleme gerektirebilir; Loading PPU Modules yazısı tek başına yeniden
+  derleme kanıtı değildir.
+- YAML girdileri 1 MiB ile sınırlıdır; bozuk dosya ve bağlantı/junction reddedilir.
+  İlgisiz alanlar birleştirilir, ilk değişiklikte .zenith-backup tutulur, dosya
+  geçici dosya + atomik rename ile yayınlanır. Değişmeyen dosya yeniden yazılmaz.
+  İzin/parse hatasında emulator spawn edilmez; özgün dosya korunur.
+- tests/rpcs3.test.mjs profil migrasyonu, aktif profil, mapping/çoklu oyuncu
+  korunması, cache kalıcılığı, idempotence, Linux yolları ve yazma hatasını kapsar.
+  tests/rpcs3-launcher.cjs gerçek Electron IPC üzerinden spawn öncesi ayarları
+  ve bozuk config durumunda spawn engelini doğrular. Gerçek donanımda gamepad
+  algılama veya derleme süresi ölçümü bu testlerin kapsamı dışındadır.
 
 ## Özellik Geliştirme Kataloğu (Extension & Feature Guide)
 

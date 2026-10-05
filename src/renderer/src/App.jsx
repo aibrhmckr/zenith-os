@@ -14,6 +14,7 @@ import GuideDrawer from './components/GuideDrawer'
 import OnScreenKeyboard from './components/OnScreenKeyboard'
 import ConsoleModal from './components/ConsoleModal'
 import CoreBrowser from './components/CoreBrowser'
+import Rpcs3Status from './components/Rpcs3Status'
 import SystemSettings from './components/SystemSettings'
 import InputHint, { KeyBadge } from './components/InputHint'
 
@@ -220,6 +221,10 @@ export default function App() {
    */
   const closePanel = () => {
     if (busy) return
+    if (panel?.type === 'platform') {
+      setPanel({ type: 'options', game: panel.game })
+      return
+    }
     if (panel?.type === 'coreBrowser') {
       setPanel(
         panel.game
@@ -365,14 +370,19 @@ export default function App() {
         setLaunchState({ phase: 'starting', title: game.title })
         const result = await window.electronAPI.launchGame(game.path, game.systemShort)
         if (!result.success) {
-          if (['missing_core', 'missing_bios'].includes(result.error))
+          if (result.platform === 'PS3' && result.status)
+            setPanel({ type: 'rpcs3', game, status: result.status })
+          else if (['missing_core', 'missing_bios'].includes(result.error))
             setPanel({
               type: result.error === 'missing_core' ? 'core' : 'bios',
               platform: result.platform,
               game,
               missing: result.missing
             })
-          else setOperationError(result.error || t('error'))
+          else
+            setOperationError(
+              result.platform === 'PS3' ? t(result.error) : result.error || t('error')
+            )
         }
       } catch {
         setOperationError(t('error'))
@@ -587,7 +597,7 @@ export default function App() {
       } else if (event.key.toLowerCase() === 'h') {
         event.preventDefault()
         if (!event.repeat) toggleGuide()
-      } else if (event.key.toLowerCase() === 'o' && activeGameRef.current) {
+      } else if (['q', 'o'].includes(event.key.toLowerCase()) && activeGameRef.current) {
         event.preventDefault()
         openPanel({ type: 'options', game: activeGameRef.current })
       } else if (event.key.toLowerCase() === 'f') {
@@ -1141,7 +1151,7 @@ export default function App() {
                 () => openPanel({ type: 'options', game: activeGame })
               }
             >
-              <InputHint keyboard="O" gamepad="Y">
+              <InputHint keyboard="Q" gamepad="Y">
                 {t('options')}
               </InputHint>
             </button>
@@ -1189,10 +1199,12 @@ export default function App() {
                 systems: 'status',
                 deleteBios: 'deleteBios',
                 options: 'options',
+                platform: 'changePlatform',
                 filter: 'filter',
                 delete: 'deleteTitle',
                 core: 'core',
                 coreBrowser: 'browseCores',
+                rpcs3: 'rpcs3Setup',
                 bios: 'biosMissing',
                 session: 'session',
                 mainMenu: 'mainMenu'
@@ -1216,6 +1228,16 @@ export default function App() {
                 {panel.type === 'core' ? t('coreDownloading') : t('working')}
               </p>
             )}
+            {panel.type === 'rpcs3' && (
+              <Rpcs3Status
+                status={panel.status}
+                onLaunch={() => {
+                  const game = panel.game
+                  closePanel()
+                  void launch(game)
+                }}
+              />
+            )}
             {panel.type === 'options' && (
               <div className="flex flex-col gap-3">
                 <p className="mb-3 text-xl font-bold">{panel.game.title}</p>
@@ -1236,6 +1258,16 @@ export default function App() {
                 >
                   {t('guide')}
                 </button>
+                {!panel.game.rpcs3Installed && (
+                  <button
+                    data-game-option
+                    data-change-platform
+                    className="console-button"
+                    onClick={() => openPanel({ type: 'platform', game: panel.game })}
+                  >
+                    {t('changePlatform')} · {panel.game.systemShort}
+                  </button>
+                )}
                 <button
                   data-game-option
                   className="console-button text-rose-200"
@@ -1248,6 +1280,31 @@ export default function App() {
                 >
                   {t('delete')}
                 </button>
+              </div>
+            )}
+            {panel.type === 'platform' && (
+              <div data-navigation-grid className="grid grid-cols-3 gap-3">
+                {[null, ...Object.keys(CONSOLE_EXTENSIONS)].map((platform) => (
+                  <button
+                    key={platform || 'auto'}
+                    data-platform-choice={platform || 'auto'}
+                    data-initial-focus={platform === null ? true : undefined}
+                    disabled={busy}
+                    className="console-button"
+                    aria-pressed={platform === (panel.game.platformOverride || null)}
+                    onClick={() =>
+                      run(
+                        () => window.electronAPI.setGamePlatform(panel.game.gameId, platform),
+                        (result) => {
+                          setSelectedConsole('ALL')
+                          setPanel({ type: 'options', game: result.game })
+                        }
+                      )
+                    }
+                  >
+                    {platform || t('automaticPlatform')}
+                  </button>
+                ))}
               </div>
             )}
             {panel.type === 'filter' && (

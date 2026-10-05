@@ -48,7 +48,13 @@ test('commit guard rejects forced ROMs and renamed executables, preserving ordin
     'AXF',
     'J64',
     'XFD',
-    'STATE'
+    'STATE',
+    'PuP',
+    'PkG',
+    'RaP',
+    'RiF',
+    'SeLf',
+    'SpRx'
   ]) {
     const file = 'fixture.' + extension
     fs.writeFileSync(path.join(root, file), 'synthetic fixture')
@@ -56,7 +62,48 @@ test('commit guard rejects forced ROMs and renamed executables, preserving ordin
     assert.equal(check().status, 1, 'Forced runtime file must be rejected: ' + extension)
     git('rm', '--cached', '--quiet', file)
   }
+  for (const bytes of [
+    Buffer.from('SCEUF'),
+    Buffer.from([127, 80, 75, 71]),
+    Buffer.from([83, 67, 69, 0])
+  ]) {
+    fs.writeFileSync(path.join(root, 'renamed-firmware.txt'), bytes)
+    git('add', 'renamed-firmware.txt')
+    assert.equal(check().status, 1, 'Renamed firmware/package signature is rejected')
+    git('rm', '--cached', '--quiet', 'renamed-firmware.txt')
+  }
   fs.writeFileSync(path.join(root, 'renamed.txt'), 'MZsynthetic signature')
   git('add', 'renamed.txt')
   assert.equal(check().status, 1, 'Executable signature with innocent suffix is rejected')
+})
+
+test('packaging excludes PS3 inputs and runtimes while retaining extractor notices', async () => {
+  const { createRequire } = await import('node:module')
+  const require = createRequire(import.meta.url)
+  const yaml = require('js-yaml')
+  const { minimatch } = require('minimatch')
+  const config = yaml.load(
+    fs.readFileSync(new URL('../electron-builder.yml', import.meta.url), 'utf8')
+  )
+  const filters = config.extraResources.find((entry) => entry.to === 'emulators/retroarch').filter
+  const denied = (rules, name) =>
+    rules.some((rule) => rule.startsWith('!') && minimatch(name, rule.slice(1), { dot: true }))
+  for (const file of [
+    'PS3UPDAT.PuP',
+    'update.PkG',
+    'license.RaP',
+    'license.RiF',
+    'boot.SeLf',
+    'module.SpRx',
+    'rpcs3.exe',
+    'dev_flash/sys/module',
+    'dev_hdd0/game/a',
+    'PS3_GAME/USRDIR/EBOOT.BIN'
+  ]) {
+    assert(denied(config.files, 'out/' + file), 'App payload must exclude ' + file)
+    assert(denied(filters, file), 'RetroArch resources must exclude ' + file)
+  }
+  assert(config.files.includes('resources/licenses/**'))
+  assert(config.asarUnpack.includes('node_modules/7zip-bin/**'))
+  assert(!config.extraResources.some((entry) => /rpcs3/i.test(entry.from)))
 })
