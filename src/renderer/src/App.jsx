@@ -6,8 +6,15 @@ import useMediaPreview from './hooks/useMediaPreview'
 import useSoundEffects from './hooks/useSoundEffects'
 import useController from './hooks/useController'
 import useClock from './hooks/useClock'
-import usePreferences from './hooks/usePreferences'
+import useDownloads from './hooks/useDownloads'
+import DownloadCenter, { NotificationClearButton } from './components/DownloadCenter'
 import useGridColumns from './hooks/useGridColumns'
+import usePreferences from './hooks/usePreferences'
+import useWallpapers from './hooks/useWallpapers'
+import useFilePicker from './hooks/useFilePicker'
+import { wallpaperGameMedia } from '../../shared/wallpapers'
+import WallpaperVisual from './components/WallpaperVisual'
+import WallpaperGallery from './components/WallpaperGallery'
 import { useI18n } from './hooks/i18n'
 import { InputContext } from './hooks/inputContext'
 import GuideDrawer from './components/GuideDrawer'
@@ -16,25 +23,35 @@ import ConsoleModal from './components/ConsoleModal'
 import CoreBrowser from './components/CoreBrowser'
 import Rpcs3Status from './components/Rpcs3Status'
 import SystemSettings from './components/SystemSettings'
+import ConsoleIcon from './components/ConsoleIcon'
+import GameSpotlight from './components/GameSpotlight'
+import MenuCardContent from './components/MenuCardContent'
+import SettingsIcon from './components/SettingsIcon'
 import InputHint, { KeyBadge } from './components/InputHint'
 
-/**
- * Move within the measured responsive grid, clamp the final partial row, and keep upward input
- * on the first row inside the library.
- *
- * @param {number} index - Zero-based selection, button, or page index.
- * @param {string} direction - Navigation direction: up, down, left, or right.
- * @param {number} total - Number of items in the current filtered grid.
- * @param {number} columns - Actual rendered grid column count.
- */
+/** Keep controller glow visible when a hidden/restored Electron window omits native focus events. */
+function markDockFocus(target) {
+  document
+    .querySelectorAll('[data-action-dock] > button, [data-action-dock] > .dock-search')
+    .forEach((segment) => {
+      segment.dataset.dockFocused = String(Boolean(target && segment.contains(target)))
+    })
+}
+
+/** Move within measured grid columns; incomplete final rows clamp to the last card. */
 const moveIndex = (index, direction, total, columns) => {
   if (!total) return 0
   if (direction === 'right') return Math.min(total - 1, index + 1)
   if (direction === 'left') return Math.max(0, index - 1)
   if (direction === 'up') return index >= columns ? index - columns : index
-  return (Math.floor(index / columns) + 1) * columns < total
-    ? Math.min(total - 1, index + columns)
-    : index
+  if (direction === 'down' && Math.floor(index / columns) < Math.floor((total - 1) / columns))
+    return Math.min(total - 1, index + columns)
+  if (direction === 'up') return index >= columns ? index - columns : index
+  if (direction === 'down')
+    return (Math.floor(index / columns) + 1) * columns < total
+      ? Math.min(total - 1, index + columns)
+      : index
+  return index
 }
 /**
  * Compose library, input, preview, and modal state for the fullscreen dashboard. Route
@@ -42,17 +59,39 @@ const moveIndex = (index, direction, total, columns) => {
  */
 export default function App() {
   const { t } = useI18n()
-  const { games, loading, error, scanning, progress, warning, refresh, removeFromState } =
-    useGameLibrary()
+  const {
+    games,
+    loading,
+    error,
+    scanning,
+    progress,
+    warning,
+    refresh,
+    rescrapeGame,
+    rescraping,
+    removeFromState
+  } = useGameLibrary()
   const { preferences, togglePreference, saveHotkeys } = usePreferences()
+  const filePicker = useFilePicker()
+  const wallpapers = useWallpapers(filePicker.pick)
+  const launchEpoch = useRef(0)
+  const [failedBackground, setFailedBackground] = useState({})
   const { play: playSound } = useSoundEffects(preferences.menuSounds)
   /**
-   * Rendered grid used for measuring column count and keeping gamepad movement aligned with
-   * responsive CSS.
+   * Scroll viewport for the fixed-size, expanding two-row game grid.
    */
   const gridRef = useRef(null)
   const columns = useGridColumns(gridRef)
   const clock = useClock()
+  const downloads = useDownloads()
+  const activeDownloads = downloads.filter((task) => task.status === 'active').length
+  const [notificationsSeenAt, setNotificationsSeenAt] = useState(0)
+  const unreadNotifications = downloads.some(
+    (task) =>
+      task.updatedAt > notificationsSeenAt &&
+      task.status !== 'active' &&
+      task.scope !== 'software-update'
+  )
   /**
    * Stateful chord recognizer persists across renders and defers individual button actions until
    * release.
@@ -129,6 +168,12 @@ export default function App() {
     [games]
   )
   const selectedConsole = consoles.includes(consoleChoice) ? consoleChoice : 'ALL'
+  // Counts describe the complete library, independent of the active text/platform filter.
+  const consoleCounts = useMemo(() => {
+    const counts = { ALL: games.length }
+    for (const game of games) counts[game.systemShort] = (counts[game.systemShort] || 0) + 1
+    return counts
+  }, [games])
   const filteredGames = games.filter(
     /**
      * Retain only games entries satisfying filteredGames's local predicate; excluded values do not reach the next stage.
@@ -145,6 +190,7 @@ export default function App() {
    */
   const focusedIndex = Math.min(currentIndex, Math.max(0, filteredGames.length - 1))
   const activeGame = filteredGames[focusedIndex] || null
+  const gameBackground = wallpaperGameMedia(activeGame, wallpapers.onlyCustom, failedBackground)
   const {
     videoRef,
     audioRef,
@@ -153,13 +199,15 @@ export default function App() {
     restart: restartPreview,
     fadeOut
   } = useMediaPreview(
-    activeGame,
+    activeGame ? { ...activeGame, videoUrl: gameBackground.video } : null,
     previewEnabled &&
+      !wallpapers.onlyCustom &&
       (!launchState || launchState.phase === 'fading') &&
       !guideGame &&
       !panel &&
       !oskOpen,
-    preferences.previewSound
+    preferences.previewSound && !wallpapers.onlyCustom,
+    wallpapers.onlyCustom
   )
   /**
    * Keep the synchronous active-game reference current for stable launch/guide callbacks.
@@ -172,13 +220,13 @@ export default function App() {
    * changes.
    */
   useEffect(() => {
-    selectedCardRef.current?.scrollIntoView({
-      block: 'nearest',
+    gridRef.current?.scrollTo({
+      top: Math.max(0, Math.floor(focusedIndex / columns) - 1) * 232,
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'
     })
     if (document.activeElement?.matches('[data-game-card]'))
       selectedCardRef.current?.focus({ preventScroll: true })
-  }, [activeGame?.id, columns])
+  }, [activeGame?.id, focusedIndex, columns])
   /**
    * Restore card/search focus after the OSK is removed from the modal top layer.
    */
@@ -196,6 +244,7 @@ export default function App() {
    */
   const openPanel = useCallback(
     (value) => {
+      if (value.type === 'downloads') setNotificationsSeenAt(Date.now())
       if (value.game) {
         panelReturnCard.current =
           Array.from(document.querySelectorAll('[data-game-card]')).find(
@@ -221,6 +270,7 @@ export default function App() {
    */
   const closePanel = () => {
     if (busy) return
+    playSound('back')
     if (panel?.type === 'platform') {
       setPanel({ type: 'options', game: panel.game })
       return
@@ -233,7 +283,7 @@ export default function App() {
       )
       return
     }
-    if (panel?.type === 'systems') {
+    if (['systems', 'wallpapers'].includes(panel?.type)) {
       setPanel({ type: 'settings' })
       return
     }
@@ -264,7 +314,7 @@ export default function App() {
    * Play one toggle sound per guide open/close transition.
    */
   useEffect(() => {
-    if (!!guideGame !== priorGuide.current) playSound('toggle')
+    if (!!guideGame !== priorGuide.current) playSound(guideGame ? 'toggle' : 'back')
     priorGuide.current = !!guideGame
   }, [guideGame, playSound])
   /**
@@ -291,9 +341,14 @@ export default function App() {
     setGuideGame(activeGameRef.current)
   }, [guideGame, stopPreview])
   /**
-   * Subscribe to Main session events and release all three subscriptions on unmount.
+   * Subscribe to Main session events and dispose each subscription on unmount.
    */
   useEffect(() => {
+    const loading = window.electronAPI.onGameLoading(() => {
+      launchEpoch.current++
+      launchBusyRef.current = true
+      setLaunchState({ phase: 'starting', title: activeGameRef.current?.title || '' })
+    })
     const a = window.electronAPI.onGameStarted(
       /**
        * Consume onGameStarted application payloads in a; the enclosing effect disposes the IPC subscription on unmount.
@@ -313,6 +368,7 @@ export default function App() {
        * Consume onGameStopped application payloads in b; the enclosing effect disposes the IPC subscription on unmount.
        */
       () => {
+        launchBusyRef.current = false
         setLaunchState(null)
         setPanel(
           /**
@@ -347,6 +403,7 @@ export default function App() {
      * Release the listeners, timers, or focus ownership acquired by App's effect before it reruns or unmounts.
      */
     return () => {
+      loading()
       a()
       b()
       c()
@@ -361,6 +418,7 @@ export default function App() {
   const launch = useCallback(
     async (game = activeGameRef.current) => {
       if (!game || launchBusyRef.current) return
+      const epoch = ++launchEpoch.current
       launchBusyRef.current = true
       setOperationError('')
       setLaunchState({ phase: 'fading', title: game.title })
@@ -387,8 +445,10 @@ export default function App() {
       } catch {
         setOperationError(t('error'))
       } finally {
-        launchBusyRef.current = false
-        setLaunchState(null)
+        if (epoch === launchEpoch.current) {
+          launchBusyRef.current = false
+          setLaunchState(null)
+        }
       }
     },
     [fadeOut, playSound, t]
@@ -425,7 +485,10 @@ export default function App() {
       /**
        * Perform one addGames operation or its success continuation under the parent's busy/error handling.
        */
-      () => window.electronAPI.addGames(),
+      async () => {
+        const tokens = await filePicker.pick('games')
+        return tokens ? window.electronAPI.addGames(tokens) : { canceled: true }
+      },
       /**
        * Perform one addGames operation or its success continuation under the parent's busy/error handling.
        */
@@ -483,13 +546,19 @@ export default function App() {
   const navigate = useCallback(
     (direction) => {
       if (launchBusyRef.current || oskRef.current || document.querySelector('dialog[open]')) return
+      if (direction === 'up' && focusedIndex < columns) {
+        const target = document.querySelector('[data-action-dock] [data-dock-item]')
+        markDockFocus(target)
+        target?.focus({ preventScroll: true })
+        return
+      }
+      markDockFocus(null)
       selectedCardRef.current?.focus({ preventScroll: true })
       setPreviewEnabled(true)
       const next = moveIndex(focusedIndex, direction, filteredGames.length, columns)
-      if (next !== focusedIndex) playSound('navigate')
       setCurrentIndex(next)
     },
-    [focusedIndex, filteredGames.length, columns, playSound]
+    [focusedIndex, filteredGames.length, columns]
   )
   /**
    * Cycle through consoles represented in the library and reset card selection to the first
@@ -528,6 +597,7 @@ export default function App() {
    * focus after the OSK unmounts.
    */
   const closeKeyboard = () => {
+    playSound('back')
     document.querySelector('[data-osk]')?.close()
     const results = games.filter(
       /**
@@ -561,9 +631,42 @@ export default function App() {
    * Leave the physical search input and return DOM focus to the selected card.
    */
   const goBack = () => {
+    markDockFocus(null)
     searchInputRef.current?.blur()
     selectedCardRef.current?.focus()
   }
+  /** Clear the committed filter and draft together, then restore the first visible card. */
+  const clearSearch = useCallback(() => {
+    markDockFocus(null)
+    setSearchQuery('')
+    setSearchDraft('')
+    setCurrentIndex(0)
+    requestAnimationFrame(() => selectedCardRef.current?.focus({ preventScroll: true }))
+  }, [])
+  /** The dock owns horizontal navigation; down/B returns to the selected game without launching. */
+  const moveDock = useCallback((direction) => {
+    if (direction === 'down') {
+      markDockFocus(null)
+      selectedCardRef.current?.focus({ preventScroll: true })
+      return
+    }
+    if (!['left', 'right'].includes(direction)) return
+    const items = [
+      ...document.querySelectorAll('[data-action-dock] [data-dock-item]:not(:disabled)')
+    ]
+    const index = Math.max(
+      0,
+      items.findIndex(
+        (item) =>
+          item === document.activeElement ||
+          (item === searchInputRef.current && document.activeElement?.closest('.dock-search'))
+      )
+    )
+    const target =
+      items[Math.max(0, Math.min(items.length - 1, index + (direction === 'right' ? 1 : -1)))]
+    markDockFocus(target)
+    target?.focus({ preventScroll: true })
+  }, [])
   /**
    * Bind dashboard keyboard actions with the latest selection and callbacks; remove the listener
    * before rebinding.
@@ -590,10 +693,17 @@ export default function App() {
       }[event.key]
       if (direction) {
         event.preventDefault()
-        navigate(direction)
+        if (event.target.closest('[data-action-dock]')) moveDock(direction)
+        else navigate(direction)
       } else if (event.key === '/') {
         event.preventDefault()
         searchInputRef.current?.focus()
+      } else if (searchQuery && ['x', 'backspace'].includes(event.key.toLowerCase())) {
+        event.preventDefault()
+        clearSearch()
+      } else if (event.key.toLowerCase() === 'd') {
+        event.preventDefault()
+        openPanel({ type: 'downloads' })
       } else if (event.key.toLowerCase() === 'h') {
         event.preventDefault()
         if (!event.repeat) toggleGuide()
@@ -646,7 +756,17 @@ export default function App() {
      * Release the listeners, timers, or focus ownership acquired by App's effect before it reruns or unmounts.
      */
     return () => window.removeEventListener('keydown', input)
-  }, [launch, navigate, openPanel, toggleGuide, togglePreference, consoles])
+  }, [
+    launch,
+    navigate,
+    moveDock,
+    openPanel,
+    toggleGuide,
+    togglePreference,
+    consoles,
+    searchQuery,
+    clearSearch
+  ])
   /**
    * Capture exit chords before ordinary shortcuts; clear held keys on blur and remove all
    * listeners on cleanup.
@@ -747,11 +867,15 @@ export default function App() {
         return
       }
       if (launchBusyRef.current || oskRef.current || guideGame || panel) return
-      if (hit(2)) {
+      if (hit(3)) {
         openKeyboard(frame.inputMode)
         return
       }
-      if (hit(3) && activeGame) {
+      if (hit(2) && searchQuery) {
+        clearSearch()
+        return
+      }
+      if (hit(2) && activeGame) {
         openPanel({ type: 'options', game: activeGame })
         return
       }
@@ -760,8 +884,8 @@ export default function App() {
         return
       }
       if (hit(7)) {
-        playSound('toggle')
-        togglePreference('previewSound')
+        document.querySelector('[data-downloads-trigger]')?.focus()
+        openPanel({ type: 'downloads' })
         return
       }
       if (hit(8)) {
@@ -788,9 +912,16 @@ export default function App() {
         changeConsole(hit(5) ? 1 : -1)
         return
       }
-      if (document.activeElement === searchInputRef.current) {
-        if (hit(0)) openKeyboard(frame.inputMode)
-        else if (move === 'down') goBack()
+      if (document.activeElement?.closest('[data-action-dock]')) {
+        if (move) moveDock(move)
+        else if (hit(0)) {
+          if (
+            document.activeElement?.closest('.dock-search') &&
+            !document.activeElement?.closest('[data-clear-search]')
+          )
+            openKeyboard(frame.inputMode)
+          else document.activeElement.click()
+        }
         return
       }
       if (hit(0)) {
@@ -803,25 +934,42 @@ export default function App() {
   return (
     <InputContext.Provider value={mode}>
       <div data-input-mode={mode} className="zenith-shell">
-        {activeGame?.backdropUrl && (
+        <div className="wallpaper-background" data-wallpaper-background={wallpapers.selectedId}>
+          <WallpaperVisual
+            wallpaper={wallpapers.selected}
+            playing={
+              !gameBackground.image &&
+              !(cinematic && gameBackground.video) &&
+              !launchState &&
+              !panel
+            }
+          />
+        </div>
+        {gameBackground.image && (
           <img
             className={
               'hero-fixed-image transition-opacity duration-700 ' +
-              (cinematic && activeGame.videoUrl ? 'opacity-0' : 'opacity-100')
+              (cinematic && gameBackground.video ? 'opacity-0' : 'opacity-100')
             }
-            src={activeGame.backdropUrl}
+            src={gameBackground.image}
+            onError={() =>
+              setFailedBackground((current) => ({ ...current, image: gameBackground.image }))
+            }
             alt=""
           />
         )}
         <video
           ref={videoRef}
-          key={activeGame?.videoUrl || 'video'}
-          src={activeGame?.videoUrl || undefined}
+          key={gameBackground.video || 'video'}
+          src={gameBackground.video || undefined}
+          onError={() =>
+            setFailedBackground((current) => ({ ...current, video: gameBackground.video }))
+          }
           loop
           playsInline
           preload="none"
           className={
-            'hero-fixed-image ' + (cinematic && activeGame?.videoUrl ? 'opacity-100' : 'opacity-0')
+            'hero-fixed-image ' + (cinematic && gameBackground.video ? 'opacity-100' : 'opacity-0')
           }
           aria-hidden="true"
         />
@@ -833,23 +981,52 @@ export default function App() {
           preload="none"
         />
         <div data-cinematic={cinematic} className="dashboard-shading" />
+        <div data-spotlight-vignette className="spotlight-vignette" aria-hidden="true" />
         <header className="dashboard-header relative z-20 flex shrink-0 items-center justify-between py-5">
           <div className="font-black tracking-[.3em] text-lg">
             ZENITH<span className="ml-2 font-light text-white/45">OS</span>
           </div>
-          <div className="flex items-center gap-5">
+          <div className="system-dock" data-system-dock>
             {controller && (
-              <span
-                data-controller-status
-                className="glass-bar flex items-center gap-2 rounded-full px-3 py-2 text-xs"
-              >
-                P1 <span className="size-2 rounded-full bg-emerald-400" />
+              <span data-controller-status className="system-controller">
+                P1 <span className="system-controller-light" />
                 {controller.battery !== null && (
                   <span data-controller-battery>{controller.battery}%</span>
                 )}
               </span>
             )}
             <button
+              data-downloads-trigger
+              aria-label={t('downloads')}
+              aria-haspopup="dialog"
+              onClick={() => {
+                setNotificationsSeenAt(Date.now())
+                openPanel({ type: 'downloads' })
+              }}
+              className="relative console-button header-control"
+            >
+              <svg
+                className={activeDownloads ? 'animate-pulse' : ''}
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4M12 2V1" />
+              </svg>
+              <InputHint gamepad="RT" keyboard="D" />
+              {(activeDownloads > 0 || unreadNotifications) && (
+                <span data-downloads-badge className="notification-dot">
+                  <span className="sr-only">{activeDownloads}</span>
+                </span>
+              )}
+            </button>
+            <button
+              data-settings-trigger
+              className="header-control"
               onClick={
                 /**
                  * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -857,25 +1034,19 @@ export default function App() {
                 () => openPanel({ type: 'settings' })
               }
             >
+              <SettingsIcon name="settings" />
               <InputHint keyboard="Menu" gamepad="Menu">
                 {t('settings')}
               </InputHint>
             </button>
-            <time data-system-clock className="text-lg tabular-nums">
+            <time data-system-clock className="system-clock">
               {clock}
             </time>
           </div>
         </header>
-        <main className="dashboard-hero relative z-10 flex-1 pt-5">
+        <main data-spotlight-host className="dashboard-hero relative z-10 flex-1">
           {activeGame ? (
-            <>
-              <h1 className="text-3xl font-extrabold tracking-wide leading-tight line-clamp-2">
-                {activeGame.title}
-              </h1>
-              <div className="mt-3 flex gap-2 text-sm">
-                <span className="hero-tag">{activeGame.systemShort}</span>
-              </div>
-            </>
+            <GameSpotlight key={activeGame.id} activeGame={activeGame} />
           ) : (
             <p className="py-6 text-white/60">
               {loading
@@ -895,12 +1066,25 @@ export default function App() {
         )}
         <section
           data-columns={columns}
-          data-focused-row={Math.floor(focusedIndex / columns)}
           data-expanded={focusedIndex >= columns}
+          data-focused-row={Math.floor(focusedIndex / columns)}
           className="dashboard-library safe-zone relative z-10 flex flex-col"
         >
-          <div className="dashboard-toolbar mb-3 flex shrink-0 flex-wrap items-center justify-start gap-3">
+          <div
+            data-action-dock
+            role="group"
+            aria-label={t('libraryActions')}
+            className="dashboard-toolbar mb-3"
+            onFocusCapture={(event) => {
+              markDockFocus(event.target)
+              playSound('navigate')
+            }}
+            onBlurCapture={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) markDockFocus(null)
+            }}
+          >
             <button
+              data-dock-item
               data-console-filter
               aria-controls="console-filters"
               onClick={
@@ -925,12 +1109,26 @@ export default function App() {
               </svg>
               <KeyBadge keyboard="F" gamepad="View" />
             </button>
-            <div className="glass-bar flex items-center gap-3 rounded-xl px-4 py-2">
+            <div className="dock-search">
+              <svg
+                className="dock-search-icon"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                aria-hidden="true"
+              >
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="m16 16 5 5" />
+              </svg>
               <input
+                data-dock-item
                 data-search-input
                 ref={searchInputRef}
                 aria-label={t('search')}
-                placeholder={t('search')}
+                placeholder={t('searchLibrary')}
                 value={searchQuery}
                 onFocus={
                   /**
@@ -967,20 +1165,46 @@ export default function App() {
                 }
                 className="bg-transparent outline-none placeholder:text-white/40"
               />
-              <button
-                data-search-trigger
-                aria-label={t('search')}
-                onClick={
-                  /**
-                   * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
-                   */
-                  () => searchInputRef.current?.focus()
-                }
-              >
-                <KeyBadge keyboard="/" gamepad="X" />
-              </button>
+              {searchQuery ? (
+                <button
+                  className="dock-search-action"
+                  data-clear-search
+                  onClick={clearSearch}
+                  aria-label={t('clearSearch')}
+                >
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 5h12v14H9L2 12Z" />
+                    <path d="m12 9 6 6m0-6-6 6" />
+                  </svg>
+                  <KeyBadge keyboard="X" gamepad="X" />
+                  <span>{t('clear')}</span>
+                </button>
+              ) : (
+                <button
+                  className="dock-search-action"
+                  data-search-trigger
+                  aria-label={t('search')}
+                  onClick={
+                    /**
+                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                     */
+                    () => searchInputRef.current?.focus()
+                  }
+                >
+                  <KeyBadge keyboard="/" gamepad="Y" />
+                </button>
+              )}
             </div>
             <button
+              data-dock-item
               data-add-game
               onClick={addGames}
               disabled={loading || busy || scanning}
@@ -990,6 +1214,7 @@ export default function App() {
               {t('add')}
             </button>
             <button
+              data-dock-item
               data-refresh-library
               disabled={scanning || !!launchState}
               onClick={
@@ -1008,7 +1233,7 @@ export default function App() {
           </div>
           {warning && (
             <p role="status" className="mb-2 text-xs text-amber-200">
-              {t('mediaWarning')}
+              {warning}
             </p>
           )}
           <div ref={gridRef} className="poster-grid">
@@ -1034,6 +1259,7 @@ export default function App() {
                      */
                     () => {
                       if (oskRef.current) return
+                      playSound('navigate')
                       setCurrentIndex(index)
                       setPreviewEnabled(true)
                       restartPreview()
@@ -1043,12 +1269,13 @@ export default function App() {
                     /**
                      * Handle onMouseEnter on this App control using the current render's values; delegate state/IPC work to its owning component.
                      */
-                    () => {
+                    (event) => {
                       if (launchBusyRef.current || oskRef.current) return
-                      if (index !== focusedIndex) playSound('navigate')
-                      setCurrentIndex(index)
-                      setPreviewEnabled(true)
-                      restartPreview()
+                      // Pointer, keyboard and controller share one focus-owned sound trigger.
+                      if (document.activeElement === event.currentTarget) {
+                        setPreviewEnabled(true)
+                        restartPreview()
+                      } else event.currentTarget.focus({ preventScroll: true })
                     }
                   }
                   onMouseLeave={
@@ -1090,23 +1317,12 @@ export default function App() {
                       alt={game.title}
                       loading="lazy"
                       className="h-full w-full object-cover"
-                      onLoad={
-                        /**
-                         * Handle onLoad on this App control using the current render's values; delegate state/IPC work to its owning component.
-                         *
-                         * @param {*} event - DOM/Electron event supplied by the subscription.
-                         */
-                        (event) => {
-                          const image = event.currentTarget
-                          // Square and landscape packaging keeps its full original artwork.
-                          if (Math.abs(image.naturalWidth / image.naturalHeight - 2 / 3) > 0.12)
-                            image.style.objectFit = 'contain'
-                        }
-                      }
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center bg-gradient-to-br from-slate-700 to-slate-950 p-4 text-2xl font-black text-white/40">
-                      {game.systemShort}
+                    <div className="poster-fallback">
+                      <ConsoleIcon platform={game.systemShort} />
+                      <strong>{game.systemShort}</strong>
+                      <span>{game.title}</span>
                     </div>
                   )}
                   <div className="poster-caption absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 to-transparent text-left">
@@ -1141,20 +1357,28 @@ export default function App() {
                 {t('back')}
               </InputHint>
             </button>
-            <button
-              data-game-options
-              disabled={!activeGame}
-              onClick={
-                /**
-                 * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
-                 */
-                () => openPanel({ type: 'options', game: activeGame })
-              }
-            >
-              <InputHint keyboard="Q" gamepad="Y">
-                {t('options')}
-              </InputHint>
-            </button>
+            {searchQuery ? (
+              <button data-clear-search onClick={clearSearch}>
+                <InputHint keyboard="X / ⌫" gamepad="X">
+                  {t('clearSearch')}
+                </InputHint>
+              </button>
+            ) : (
+              <button
+                data-game-options
+                disabled={!activeGame}
+                onClick={
+                  /**
+                   * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                   */
+                  () => openPanel({ type: 'options', game: activeGame })
+                }
+              >
+                <InputHint keyboard="Q" gamepad="X">
+                  {t('options')}
+                </InputHint>
+              </button>
+            )}
             <button
               onClick={
                 /**
@@ -1163,7 +1387,7 @@ export default function App() {
                 () => searchInputRef.current?.focus()
               }
             >
-              <InputHint keyboard="/" gamepad="X">
+              <InputHint keyboard="/" gamepad="Y">
                 {t('searchAction')}
               </InputHint>
             </button>
@@ -1195,7 +1419,9 @@ export default function App() {
             kind={panel.type}
             title={t(
               {
+                downloads: 'downloads',
                 settings: 'settings',
+                wallpapers: 'wallpaperGallery',
                 systems: 'status',
                 deleteBios: 'deleteBios',
                 options: 'options',
@@ -1212,6 +1438,18 @@ export default function App() {
             )}
             onClose={closePanel}
             busy={busy}
+            headerActions={
+              panel.type === 'downloads' ? (
+                <NotificationClearButton
+                  tasks={downloads}
+                  onClear={() =>
+                    void window.electronAPI
+                      .clearDownloadHistory()
+                      .catch(() => setOperationError(t('notificationClearFailed')))
+                  }
+                />
+              ) : null
+            }
           >
             {operationError && (
               <p role="alert" className="mb-4 text-rose-200">
@@ -1227,6 +1465,12 @@ export default function App() {
               <p role="status" aria-live="polite" className="mb-4 animate-pulse">
                 {panel.type === 'core' ? t('coreDownloading') : t('working')}
               </p>
+            )}
+            {panel.type === 'downloads' && (
+              <DownloadCenter
+                tasks={downloads}
+                onOpenUpdates={() => openPanel({ type: 'settings', focus: 'software-update' })}
+              />
             )}
             {panel.type === 'rpcs3' && (
               <Rpcs3Status
@@ -1245,7 +1489,7 @@ export default function App() {
                   data-game-option
                   data-initial-focus
                   data-open-guide
-                  className="console-button"
+                  className="settings-navigation-card"
                   onClick={
                     /**
                      * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1256,21 +1500,46 @@ export default function App() {
                     }
                   }
                 >
-                  {t('guide')}
+                  <MenuCardContent
+                    icon="book"
+                    title={t('guide')}
+                    description={t('guideCardHelp')}
+                  />
+                </button>
+                <button
+                  data-game-option
+                  data-rescrape-game
+                  disabled={rescraping}
+                  className="settings-navigation-card"
+                  onClick={() => {
+                    const game = panel.game
+                    closePanel()
+                    void rescrapeGame(game)
+                  }}
+                >
+                  <MenuCardContent
+                    icon="update"
+                    title={t('rescrapeMedia')}
+                    description={t('rescrapeCardHelp')}
+                  />
                 </button>
                 {!panel.game.rpcs3Installed && (
                   <button
                     data-game-option
                     data-change-platform
-                    className="console-button"
+                    className="settings-navigation-card"
                     onClick={() => openPanel({ type: 'platform', game: panel.game })}
                   >
-                    {t('changePlatform')} · {panel.game.systemShort}
+                    <MenuCardContent
+                      icon="gamepad"
+                      title={t('changePlatform')}
+                      description={t('platformCardHelp')}
+                    />
                   </button>
                 )}
                 <button
                   data-game-option
-                  className="console-button text-rose-200"
+                  className="settings-navigation-card menu-card-danger"
                   onClick={
                     /**
                      * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1278,7 +1547,11 @@ export default function App() {
                     () => openPanel({ type: 'delete', game: panel.game })
                   }
                 >
-                  {t('delete')}
+                  <MenuCardContent
+                    icon="trash"
+                    title={t('delete')}
+                    description={t('deleteCardHelp')}
+                  />
                 </button>
               </div>
             )}
@@ -1308,7 +1581,7 @@ export default function App() {
               </div>
             )}
             {panel.type === 'filter' && (
-              <div data-navigation-grid id="console-filters" className="grid grid-cols-3 gap-3">
+              <div data-navigation-grid id="console-filters" className="console-filter-grid">
                 {consoles.map(
                   /**
                    * Project each consoles entry for App; preserve input ordering in the derived collection.
@@ -1318,7 +1591,8 @@ export default function App() {
                   (system) => (
                     <button
                       key={system}
-                      className="console-button"
+                      className="console-filter-card"
+                      data-console-filter={system}
                       aria-pressed={selectedConsole === system}
                       onClick={
                         /**
@@ -1331,7 +1605,21 @@ export default function App() {
                         }
                       }
                     >
-                      {system === 'ALL' ? t('all') : system}
+                      <span className="console-filter-icon">
+                        <ConsoleIcon platform={system} />
+                      </span>
+                      <span className="console-filter-name">
+                        {system === 'ALL' ? t('all') : system}
+                      </span>
+                      <span
+                        className="console-filter-count"
+                        data-game-count={consoleCounts[system] || 0}
+                      >
+                        <strong>{consoleCounts[system] || 0}</strong>
+                        <span>
+                          {t(consoleCounts[system] === 1 ? 'gameCountOne' : 'gameCountMany')}
+                        </span>
+                      </span>
                     </button>
                   )
                 )}
@@ -1514,11 +1802,11 @@ export default function App() {
             )}
             {panel.type === 'mainMenu' && (
               <div className="flex flex-col gap-3">
-                <button className="console-button" onClick={closePanel}>
-                  {t('back')}
+                <button className="settings-navigation-card" onClick={closePanel}>
+                  <MenuCardContent icon="back" title={t('back')} description={t('backCardHelp')} />
                 </button>
                 <button
-                  className="console-button"
+                  className="settings-navigation-card"
                   onClick={
                     /**
                      * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1526,11 +1814,15 @@ export default function App() {
                     () => openPanel({ type: 'settings' })
                   }
                 >
-                  {t('settings')}
+                  <MenuCardContent
+                    icon="settings"
+                    title={t('settings')}
+                    description={t('settingsCardHelp')}
+                  />
                 </button>
                 <button
                   data-quit-app
-                  className="console-button text-rose-300"
+                  className="settings-navigation-card menu-card-danger"
                   onClick={
                     /**
                      * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1538,25 +1830,24 @@ export default function App() {
                     () => window.electronAPI.quitApp()
                   }
                 >
-                  {t('quit')}
+                  <MenuCardContent icon="power" title={t('quit')} description={t('quitCardHelp')} />
                 </button>
               </div>
             )}
             {panel.type === 'session' && (
               <>
-                <p className="mb-5 text-white/60">{t('sessionHelp')}</p>
                 <div className="flex flex-col gap-3">
                   <button
                     data-initial-focus
                     data-session-option
-                    className="console-button"
+                    className="settings-navigation-card"
                     onClick={closePanel}
                   >
-                    {t('resume')}
+                    <MenuCardContent icon="play" title={t('resume')} />
                   </button>
                   <button
                     data-session-option
-                    className="console-button text-rose-200"
+                    className="settings-navigation-card menu-card-danger"
                     onClick={
                       /**
                        * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1564,13 +1855,29 @@ export default function App() {
                       () => void window.electronAPI.stopSession()
                     }
                   >
-                    {t('stop')}
+                    <MenuCardContent icon="stop" title={t('stop')} />
                   </button>
                 </div>
                 <button
+                  data-restart-session
+                  data-session-option
+                  className="settings-navigation-card"
+                  onClick={async () => {
+                    setPanel(null)
+                    const result = await window.electronAPI.restartSession()
+                    if (!result.success) {
+                      launchBusyRef.current = false
+                      setLaunchState(null)
+                      setOperationError(result.error)
+                    }
+                  }}
+                >
+                  <MenuCardContent icon="update" title={t('restartSession')} />
+                </button>
+                <button
                   data-quit-app
                   data-session-option
-                  className="console-button mt-4 text-rose-300"
+                  className="settings-navigation-card menu-card-danger"
                   onClick={
                     /**
                      * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1578,9 +1885,8 @@ export default function App() {
                     () => window.electronAPI.quitApp()
                   }
                 >
-                  {t('quit')}
+                  <MenuCardContent icon="power" title={t('quit')} description={t('quitCardHelp')} />
                 </button>
-                <p className="mt-5 text-xs text-white/40">{t('homeHelp')}</p>
               </>
             )}
             {panel.type === 'deleteBios' && (
@@ -1618,7 +1924,11 @@ export default function App() {
             )}
             {['settings', 'systems'].includes(panel.type) && (
               <SystemSettings
+                wallpaperOnly={wallpapers.onlyCustom}
+                focusUpdate={panel.focus === 'software-update'}
+                updateTasks={downloads}
                 systemPage={panel.type === 'systems'}
+                onOpenWallpapers={() => openPanel({ type: 'wallpapers' })}
                 onBrowseCores={
                   /**
                    * Handle onBrowseCores on this App control using the current render's values; delegate state/IPC work to its owning component.
@@ -1647,6 +1957,9 @@ export default function App() {
                 playSound={playSound}
               />
             )}
+            {panel.type === 'wallpapers' && (
+              <WallpaperGallery model={wallpapers} playSound={playSound} />
+            )}
           </ConsoleModal>
         )}
         {launchState && launchState.phase !== 'running' && (
@@ -1661,6 +1974,7 @@ export default function App() {
           </div>
         )}
       </div>
+      {filePicker.browser}
     </InputContext.Provider>
   )
 }

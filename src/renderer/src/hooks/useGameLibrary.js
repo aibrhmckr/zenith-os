@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useI18n } from './i18n'
 
 /**
  * Own initial disk scanning, background scraping, progress, and live media IPC subscriptions.
  * Tear down listeners on unmount and preserve late preview updates.
  */
 export default function useGameLibrary() {
+  const { t } = useI18n()
   /**
    * Current decorated library records, replaced by scans and patched by asynchronous media events.
    */
@@ -21,6 +23,8 @@ export default function useGameLibrary() {
    * Visible scan indicator, independent from the already usable local game list.
    */
   const [scanning, setScanning] = useState(false)
+  const [rescraping, setRescraping] = useState(false)
+  const rescrapePending = useRef(false)
   /**
    * Completed/total artwork counts supplied by Main.
    */
@@ -52,23 +56,35 @@ export default function useGameLibrary() {
     if (!update) return game
     return {
       ...game,
+      ...(/(?:cover-hd\.png|cover-gametdb\.jpg)$/.test(update.media?.boxart || '')
+        ? { cover: update.cover, coverUrl: update.coverUrl }
+        : {}),
+      ...(update.media?.snap?.endsWith('fanart.png')
+        ? { backdrop: update.backdrop, backdropUrl: update.backdropUrl }
+        : {}),
       media: {
         ...game.media,
+        boxart: /(?:cover-hd\.png|cover-gametdb\.jpg)$/.test(update.media?.boxart || '')
+          ? update.media.boxart
+          : game.media?.boxart,
+        snap: update.media?.snap?.endsWith('fanart.png') ? update.media.snap : game.media?.snap,
         music: game.media?.music || update.media.music,
-        video: game.media?.video || update.media.video
+        video: game.media?.video || update.media.video,
+        logo: game.media?.logo || update.media.logo
       },
       musicUrl: game.musicUrl || update.musicUrl,
-      videoUrl: game.videoUrl || update.videoUrl
+      videoUrl: game.videoUrl || update.videoUrl,
+      logoUrl: game.logoUrl || update.logoUrl
     }
   }, [])
   /**
    * Serialize rescans, show local records before scraping, and ignore results after unmount.
-   * Explicit refresh bypasses provider cooldowns by default.
+   * Normal refresh preserves downloaded media; per-game rescrape is the explicit forced path.
    *
    * @param {boolean} force - Bypass provider lookup cooldowns for an explicit rescan.
    */
   const refresh = useCallback(
-    async (force = true) => {
+    async (force = false, gameId = null) => {
       while (busy.current) {
         await new Promise(
           /**
@@ -91,7 +107,7 @@ export default function useGameLibrary() {
         if (!mounted.current) return
         setGames(local.map(withLatestMedia))
         setLoading(false)
-        const result = await window.electronAPI.scanAndScrapeGames({ force })
+        const result = await window.electronAPI.scanAndScrapeGames({ force, gameId })
         if (!mounted.current) return
         setGames(result.games.map(withLatestMedia))
         setWarning(result.warning || '')
@@ -170,16 +186,7 @@ export default function useGameLibrary() {
                */
               (game) =>
                 game.gameId === update.gameId
-                  ? {
-                      ...game,
-                      media: {
-                        ...game.media,
-                        music: update.media.music,
-                        video: update.media.video
-                      },
-                      musicUrl: update.musicUrl,
-                      videoUrl: update.videoUrl
-                    }
+                  ? { ...game, ...update, media: { ...game.media, ...update.media } }
                   : game
             )
         )
@@ -230,5 +237,50 @@ export default function useGameLibrary() {
         )
     )
   }, [])
-  return { games, loading, error, scanning, progress, warning, refresh, removeFromState }
+  /** Keep the explicit action busy until Main finishes images and optional previews. */
+  const rescrapeGame = useCallback(
+    async (game) => {
+      if (rescrapePending.current) return
+      rescrapePending.current = true
+      setRescraping(true)
+      setError('')
+      setWarning('')
+      setProgress(null)
+      try {
+        const result = await window.electronAPI.rescrapeGame({
+          id: game.id,
+          gameId: game.gameId,
+          platform: game.systemShort,
+          title: game.title,
+          path: game.path
+        })
+        if (!result.success) throw Error(result.error)
+        if (mounted.current) {
+          mediaUpdates.current.set(result.game.gameId, result.game)
+          setGames((current) =>
+            current.map((entry) => (entry.gameId === result.game.gameId ? result.game : entry))
+          )
+          setWarning(result.warning || t('mediaSearchDone'))
+        }
+      } catch (failure) {
+        if (mounted.current) setError(failure.message)
+      } finally {
+        rescrapePending.current = false
+        if (mounted.current) setRescraping(false)
+      }
+    },
+    [t]
+  )
+  return {
+    games,
+    loading,
+    error,
+    scanning: scanning || rescraping,
+    rescraping,
+    progress,
+    warning,
+    refresh,
+    rescrapeGame,
+    removeFromState
+  }
 }

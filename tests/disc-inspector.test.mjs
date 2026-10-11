@@ -17,8 +17,11 @@ const fixture = (t) => {
 test('ISO root metadata distinguishes PS3, PSP, PS2 and PS1 without filename hints', (t) => {
   const root = fixture(t),
     file = path.join(root, 'Blur (USA).iso')
+  let modified = 1700000000
   for (const system of ['PS3', 'PSP', 'PS2', 'PS1']) {
     fs.writeFileSync(file, discImage(system))
+    // Distinct synthetic rewrites must invalidate the size/mtime cache even on coarse Windows clocks.
+    fs.utimesSync(file, modified, modified++)
     assert.equal(inspectIso(file), system)
     assert.equal(detectGamePlatform(file), system)
   }

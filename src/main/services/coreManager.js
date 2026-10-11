@@ -67,6 +67,24 @@ export const buildbotBase = (platform) =>
  * 200-MiB archive, unpacked payload, and installed-file size ceiling.
  */
 const MAX = 200 * 1024 * 1024
+export const CORE_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/** A cooldown applies only to the same physically verified file after a successful installation. */
+function recentlyUpdated(destination, now) {
+  try {
+    const record = JSON.parse(fs.readFileSync(destination + '.zenith-update.json', 'utf8'))
+    const stat = fs.statSync(destination)
+    const age = now - record.checkedAt
+    return (
+      age >= 0 &&
+      age < CORE_UPDATE_INTERVAL_MS &&
+      record.size === stat.size &&
+      record.mtimeMs === stat.mtimeMs
+    )
+  } catch {
+    return false
+  }
+}
 // One physical-file check for the installer, catalog, status IPC and launcher.
 /**
  * Return the absolute path only for a readable, nonempty native x64 core with valid PE/ELF
@@ -204,7 +222,9 @@ export function createCoreManager({
   retroarchDir,
   fetchImpl = globalThis.fetch,
   platform = process.platform,
-  arch = process.arch
+  arch = process.arch,
+  onProgress = () => {},
+  now = Date.now
 }) {
   /**
    * Host-specific candidate mapping shared by automatic lookup and installation.
@@ -243,7 +263,7 @@ export function createCoreManager({
    *
    * @param {string[]} files - Ordered fallback core filenames to try.
    */
-  const installFiles = (files) => {
+  const installFiles = (files, update = false) => {
     const key = files.join(',')
     if (pending.has(key)) return pending.get(key)
     const task = (
@@ -261,7 +281,9 @@ export function createCoreManager({
            */
           (name) => pathFor(name)
         )
-        if (existing) return { success: true, core: existing }
+        if (existing && !update) return { success: true, core: existing }
+        if (existing && update && recentlyUpdated(pathFor(existing), now()))
+          return { success: true, core: existing, upToDate: true }
         let failure = 'Core is unavailable from the Libretro build server.'
         for (const name of files) {
           /**
@@ -274,6 +296,8 @@ export function createCoreManager({
            * User-visible failure stage used to distinguish network, extraction, filesystem,
            * metadata-cleanup, and verification errors.
            */
+          const report = (value) => onProgress({ id: 'core:' + name, name, ...value })
+          report({ status: 'active', phase: 'downloading', received: 0, total: null })
           let stage = 'download'
           try {
             const response = await fetchImpl(url, {
@@ -296,7 +320,13 @@ export function createCoreManager({
               bytes += chunk.length
               if (bytes > MAX) throw Error('Core download exceeds 200 MB.')
               chunks.push(Buffer.from(chunk))
+              report({
+                status: 'active',
+                received: bytes,
+                total: Number(response.headers.get('content-length')) || null
+              })
             }
+            report({ status: 'active', phase: 'verifying' })
             stage = 'extract'
             const dll = extractCore(Buffer.concat(chunks), name, platform)
             stage = 'write'
@@ -306,6 +336,11 @@ export function createCoreManager({
              * failure.
              */
             const temporary = `${destination}.${randomUUID()}.part`
+            const backup = temporary + '.backup'
+            const receiptTemporary = temporary + '.json'
+            let backedUp = false
+            let published = false
+            let rollbackFailed = false
             try {
               // Fresh native Buffer writes do not propagate ZIP/browser attachment metadata.
               await fs.promises.writeFile(temporary, dll, { flag: 'wx' })
@@ -321,18 +356,51 @@ export function createCoreManager({
               }
               stage = 'write'
               // Publish only a complete core, replacing broken/zero-byte previous installs.
+              if (update && pathFor(name)) {
+                await fs.promises.copyFile(destination, backup, fs.constants.COPYFILE_EXCL)
+                backedUp = true
+              }
               await fs.promises.rename(temporary, destination)
+              published = true
               stage = 'verify'
               const written = await fs.promises.readFile(destination)
               if (!written.equals(dll) || !pathFor(name)) {
                 await fs.promises.rm(destination, { force: true })
                 throw Error('Installed core is missing, unreadable or differs from the download.')
               }
+              const stat = await fs.promises.stat(destination)
+              await fs.promises.writeFile(
+                receiptTemporary,
+                JSON.stringify({
+                  checkedAt: now(),
+                  size: stat.size,
+                  mtimeMs: stat.mtimeMs
+                }),
+                { flag: 'wx' }
+              )
+              await fs.promises.rename(receiptTemporary, destination + '.zenith-update.json')
+            } catch (error) {
+              if (backedUp && published) {
+                try {
+                  await fs.promises.rename(backup, destination)
+                } catch (rollback) {
+                  rollbackFailed = true
+                  throw Error(
+                    `${error.message} Recovery copy retained at ${backup}: ${rollback.message}`
+                  )
+                }
+              }
+              throw error
             } finally {
               await fs.promises.rm(temporary, { force: true })
+              await fs.promises.rm(receiptTemporary, { force: true })
+              // A failed rollback must leave its recovery copy intact.
+              if (!rollbackFailed) await fs.promises.rm(backup, { force: true })
             }
+            report({ status: 'completed', phase: 'ready' })
             return { success: true, core: name }
           } catch (error) {
+            report({ status: 'failed', error: error.message })
             failure = `Core ${stage} failed (${error.code || error.message}). Source: ${url}. Target: ${destination}`
           }
         }
@@ -364,11 +432,18 @@ export function createCoreManager({
    *
    * @param {string} name - Filename or named action selected by the caller; accepted values are validated by this helper.
    */
-  const installNamed = (name) =>
+  const installNamed = (name, update = false) =>
     typeof name === 'string' &&
     /^[a-z0-9_-]+_libretro\.(dll|so)$/.test(name.toLowerCase()) &&
     name.endsWith(platform === 'linux' ? '.so' : '.dll')
-      ? installFiles([name])
+      ? installFiles([name], update)
       : Promise.resolve({ success: false, error: 'Invalid core filename.' })
-  return { find, pathFor, install, installNamed }
+  return {
+    find,
+    pathFor,
+    install,
+    installNamed,
+    busy: () => pending.size > 0,
+    whenIdle: () => Promise.allSettled([...pending.values()])
+  }
 }

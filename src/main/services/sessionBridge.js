@@ -12,7 +12,14 @@ import { spawn } from 'node:child_process'
  * @param {Object} hotkeys - Normalized gamepad indices and physical keyboard-code pair.
  * @param {Buffer} windowHandle - Main-process BrowserWindow HWND; never accepted from renderer input.
  */
-export function startSessionBridge(pid, scriptPath, onHome, hotkeys, windowHandle) {
+export function startSessionBridge(
+  pid,
+  scriptPath,
+  onHome,
+  hotkeys,
+  windowHandle,
+  { watchReady = false, onReady = () => {} } = {}
+) {
   if (
     !['win32', 'linux'].includes(process.platform) ||
     !Number.isInteger(pid) ||
@@ -64,7 +71,10 @@ export function startSessionBridge(pid, scriptPath, onHome, hotkeys, windowHandl
       buffer += data.toString()
       const lines = buffer.split(/\r?\n/)
       buffer = lines.pop()
-      for (const line of lines) if (line.trim() === 'home') onHome()
+      for (const line of lines) {
+        if (line.trim() === 'home') onHome()
+        if (watchReady && line.trim() === 'ready') onReady()
+      }
     }
   )
   child.on(
@@ -101,6 +111,7 @@ export function startSessionBridge(pid, scriptPath, onHome, hotkeys, windowHandl
     if (!child.killed && child.stdin.writable)
       child.stdin.write(
         JSON.stringify({
+          watchReady,
           pad: config.gamepad,
           keys:
             process.platform === 'win32' ? config.keyboard.map(windowsKeyCode) : config.keyboard,

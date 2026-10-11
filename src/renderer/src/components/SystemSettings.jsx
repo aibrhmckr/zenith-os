@@ -1,8 +1,11 @@
 /* eslint-disable react/prop-types -- Internal settings panel. */
 import { useEffect, useState } from 'react'
 import Rpcs3Status from './Rpcs3Status'
+import ConsoleStatusCard, { CoreLabel } from './ConsoleStatusCard'
 import HotkeySetting from './HotkeySetting'
 import ConsoleDropdown from './ConsoleDropdown'
+import SettingsIcon from './SettingsIcon'
+import { taskError } from '../hooks/downloadPresentation'
 import { useI18n } from '../hooks/i18n'
 /**
  * Render language/audio/hotkey settings or the library-only core/BIOS status page. Main owns
@@ -13,6 +16,9 @@ import { useI18n } from '../hooks/i18n'
  * @param {Function} options.togglePreference - Toggle a known boolean setting in the parent preference hook.
  * @param {Function} options.saveHotkeys - Persist a normalized key pair through Main.
  * @param {Function} options.playSound - Play a named application sound through the shared pool.
+ * @param {boolean} options.wallpaperOnly - Disable preview audio controls without overwriting the saved preference.
+ * @param {boolean} options.focusUpdate - Let ConsoleModal initially focus Software Update after notification navigation.
+ * @param {Array} options.updateTasks - Main-owned task snapshots used to prevent duplicate maintenance actions.
  * @param {boolean} options.systemPage - Show core/BIOS status instead of general Settings.
  * @param {Function} options.onOpenSystems - Navigate to the system-status subpage.
  * @param {Function} options.onBrowseCores - Open the core catalog for the selected platform.
@@ -23,8 +29,12 @@ export default function SystemSettings({
   togglePreference,
   saveHotkeys,
   playSound,
+  wallpaperOnly = false,
+  focusUpdate = false,
+  updateTasks = [],
   systemPage = false,
   onOpenSystems,
+  onOpenWallpapers,
   onBrowseCores,
   onDeleteBios
 }) {
@@ -106,6 +116,26 @@ export default function SystemSettings({
       setBusy(false)
     }
   }
+  const update = updateTasks.find((task) => task.id === 'software-update')
+  const updating = updateTasks.some(
+    (task) => task.id === 'software-update' && task.status === 'active'
+  )
+  // Main owns the long-running operation; opening this page never initiates an update.
+  const updateSoftware = async () => {
+    if (busy || updating) return
+    setBusy(true)
+    setFailed(false)
+    try {
+      const result = await window.electronAPI.updateSoftware()
+      if (!result.success) throw Error(result.error)
+      setMessage(t('softwareUpdateStarted'))
+    } catch (error) {
+      setFailed(true)
+      setMessage(error.message || t('error'))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <>
       {message && (
@@ -119,10 +149,13 @@ export default function SystemSettings({
       {busy && <p className="animate-pulse">{t('working')}</p>}
       {!systemPage && (
         <>
-          <h3 className="mb-3 font-bold">{t('language')}</h3>
-          <div className="mb-7 max-w-sm">
+          <div className="settings-language-card">
+            <span className="settings-card-icon">
+              <SettingsIcon name="globe" />
+            </span>
+            <h3>{t('languageSelection')}</h3>
             <ConsoleDropdown
-              label={t('language')}
+              label={t('languageSelection')}
               value={language}
               onChange={setLanguage}
               options={[
@@ -149,6 +182,10 @@ export default function SystemSettings({
                   role="switch"
                   aria-checked={preferences[key]}
                   data-audio-setting={key}
+                  disabled={key === 'previewSound' && wallpaperOnly}
+                  aria-describedby={
+                    key === 'previewSound' && wallpaperOnly ? 'wallpaper-audio-hint' : undefined
+                  }
                   className="settings-toggle"
                   onClick={
                     /**
@@ -172,16 +209,136 @@ export default function SystemSettings({
                 </button>
               )
             )}
+            {wallpaperOnly && (
+              <p id="wallpaper-audio-hint" className="text-sm text-white/60">
+                {t('wallpaperAudioMuted')}
+              </p>
+            )}
+          </div>
+          <h3 className="mb-3 font-bold">{t('mediaDownloads')}</h3>
+          <div className="mb-8 space-y-3">
+            {['downloadCovers', 'downloadBackgrounds', 'downloadVideos', 'downloadAudio'].map(
+              (key) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="switch"
+                  aria-checked={preferences[key]}
+                  data-media-setting={key}
+                  disabled={busy}
+                  className="settings-toggle"
+                  onClick={() =>
+                    run(async () => {
+                      playSound('toggle')
+                      await togglePreference(key)
+                      return { success: true }
+                    })
+                  }
+                >
+                  <span>{t(key)}</span>
+                  <span className="flex items-center gap-3">
+                    <span className="text-xs text-white/65">
+                      {t(preferences[key] ? 'on' : 'off')}
+                    </span>
+                    <span className="toggle-track" aria-hidden="true">
+                      <span />
+                    </span>
+                  </span>
+                </button>
+              )
+            )}
           </div>
           <HotkeySetting hotkeys={preferences.hotkeys} onSave={saveHotkeys} />
-          <button data-system-page className="console-button w-full" onClick={onOpenSystems}>
-            {t('status')} →
-          </button>
+          <div className="settings-navigation-cards">
+            <button
+              data-wallpaper-page
+              className="settings-navigation-card"
+              onClick={onOpenWallpapers}
+            >
+              <span className="settings-card-icon">
+                <SettingsIcon name="palette" />
+              </span>
+              <span className="settings-card-copy">
+                <strong>{t('wallpapersTitle')}</strong>
+                <span>{t('wallpapersNavHelp')}</span>
+              </span>
+              <span className="settings-card-chevron">
+                <SettingsIcon name="chevron" />
+              </span>
+            </button>
+            <button data-system-page className="settings-navigation-card" onClick={onOpenSystems}>
+              <span className="settings-card-icon">
+                <SettingsIcon name="chip" />
+              </span>
+              <span className="settings-card-copy">
+                <strong>{t('status')}</strong>
+                <span>{t('systemsNavHelp')}</span>
+              </span>
+              <span className="settings-card-chevron">
+                <SettingsIcon name="chevron" />
+              </span>
+            </button>
+            <button
+              data-software-update
+              data-settings-update-focus={focusUpdate}
+              aria-disabled={busy || updating}
+              className="settings-navigation-card"
+              onClick={updateSoftware}
+            >
+              <span className="settings-card-icon">
+                <SettingsIcon name="update" />
+              </span>
+              <span className="settings-card-copy">
+                <strong>
+                  {t('softwareUpdate')}
+                  {updating ? ' · ' + t('working') : ''}
+                </strong>
+                <span>{t('softwareUpdateNavHelp')}</span>
+                {update && (
+                  <span
+                    className="settings-update-tracker"
+                    data-update-tracker
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {update.developer && <span>{t('developerBuild')}</span>}
+                    {updating && (
+                      <>
+                        <span>
+                          {update.component || t('working')}
+                          {Number.isFinite(update.componentPercent)
+                            ? ' · ' + update.componentPercent + '%'
+                            : ''}
+                        </span>
+                        <progress
+                          aria-label={t('softwareUpdate')}
+                          max="100"
+                          value={update.componentPercent ?? undefined}
+                        />
+                        <span>
+                          {t('componentsUpdated')
+                            .replace('{done}', update.completedComponents || 0)
+                            .replace('{total}', update.totalComponents || 0)}
+                        </span>
+                      </>
+                    )}
+                    {update.status === 'completed' && <span>{t('softwareUpdateComplete')}</span>}
+                    {update.status === 'failed' && (
+                      <span className="text-rose-200">{taskError(update, t)}</span>
+                    )}
+                  </span>
+                )}
+              </span>
+              <span className="settings-card-chevron">
+                <SettingsIcon name="chevron" />
+              </span>
+            </button>
+          </div>
         </>
       )}
       {systemPage && (
         <>
-          <div className="space-y-3">
+          <div className="system-status-list">
             {!systems.length && <p>{t('noSystems')}</p>}
             {systems.map(
               /**
@@ -194,7 +351,7 @@ export default function SystemSettings({
                   <div
                     key={system.platform}
                     data-core-platform="PS3"
-                    className="rounded-xl border border-white/10 p-4"
+                    className="system-status-slot"
                   >
                     <Rpcs3Status status={system.runtime} />
                   </div>
@@ -202,99 +359,99 @@ export default function SystemSettings({
                   <div
                     key={system.platform}
                     data-core-platform={system.platform}
-                    className="rounded-xl border border-white/10 p-4"
+                    className="system-status-slot"
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <strong>{system.platform}</strong>
-                      <span
-                        className={
-                          system.core && system.bios.ready ? 'text-emerald-300' : 'text-amber-200'
-                        }
-                      >
-                        {t(system.core && system.bios.ready ? 'ready' : 'missing')}
-                      </span>
-                    </div>
-                    <p className="my-2 text-xs text-white/50">
-                      {t('core')}: {system.core || t('missing')}
-                      {system.bios.required
-                        ? ' · BIOS: ' +
-                          (system.bios.ready ? t('ready') : system.bios.missing.join(', '))
-                        : ''}
-                    </p>
-                    <p className="mb-3 break-all text-xs text-white/50">
-                      {system.corePath || system.coreDirectory}
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {!system.core && (
+                    <ConsoleStatusCard
+                      platform={system.platform}
+                      emulator={<CoreLabel file={system.core || system.expectedCore} />}
+                      ready={!!system.core && system.bios.ready}
+                      details={
+                        <>
+                          <p>
+                            {t('core')}: {system.core || t('missing')}
+                          </p>
+                          <code>{system.corePath || system.coreDirectory}</code>
+                          {system.bios.required && (
+                            <p>
+                              BIOS:{' '}
+                              {system.bios.ready ? t('ready') : system.bios.missing.join(', ')}
+                            </p>
+                          )}
+                        </>
+                      }
+                    >
+                      <div className="system-status-actions">
+                        {!system.core && (
+                          <button
+                            data-install-core={system.platform}
+                            disabled={busy}
+                            className="console-button"
+                            onClick={
+                              /**
+                               * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
+                               */
+                              () =>
+                                run(
+                                  /**
+                                   * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
+                                   */
+                                  () => window.electronAPI.installCore(system.platform)
+                                )
+                            }
+                          >
+                            {t('install')}
+                          </button>
+                        )}
                         <button
-                          data-install-core={system.platform}
+                          data-browse-cores={system.platform}
                           disabled={busy}
                           className="console-button"
                           onClick={
                             /**
                              * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
                              */
-                            () =>
-                              run(
-                                /**
-                                 * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
-                                 */
-                                () => window.electronAPI.installCore(system.platform)
-                              )
+                            () => onBrowseCores(system.platform)
                           }
                         >
-                          {t('install')}
+                          {t('browseCores')}
                         </button>
-                      )}
-                      <button
-                        data-browse-cores={system.platform}
-                        disabled={busy}
-                        className="console-button"
-                        onClick={
-                          /**
-                           * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
-                           */
-                          () => onBrowseCores(system.platform)
-                        }
-                      >
-                        {t('browseCores')}
-                      </button>
-                      {system.bios.required && system.bios.ready && (
-                        <button
-                          data-delete-bios={system.platform}
-                          disabled={busy}
-                          className="console-button text-rose-200"
-                          onClick={
-                            /**
-                             * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
-                             */
-                            () => onDeleteBios(system.platform)
-                          }
-                        >
-                          {t('deleteBios')}
-                        </button>
-                      )}
-                      {system.bios.required && (
-                        <button
-                          disabled={busy}
-                          className="console-button"
-                          onClick={
-                            /**
-                             * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
-                             */
-                            () =>
-                              run(
-                                /**
-                                 * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
-                                 */
-                                () => window.electronAPI.uploadBios(system.platform)
-                              )
-                          }
-                        >
-                          {t('uploadBios')}
-                        </button>
-                      )}
-                    </div>
+                        {system.bios.required && system.bios.ready && (
+                          <button
+                            data-delete-bios={system.platform}
+                            disabled={busy}
+                            className="console-button text-rose-200"
+                            onClick={
+                              /**
+                               * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
+                               */
+                              () => onDeleteBios(system.platform)
+                            }
+                          >
+                            {t('deleteBios')}
+                          </button>
+                        )}
+                        {system.bios.required && (
+                          <button
+                            disabled={busy}
+                            className="console-button"
+                            onClick={
+                              /**
+                               * Handle onClick on this SystemSettings control using the current render's values; delegate state/IPC work to its owning component.
+                               */
+                              () =>
+                                run(
+                                  /**
+                                   * Perform one SystemSettings operation or its success continuation under the parent's busy/error handling.
+                                   */
+                                  () => window.electronAPI.uploadBios(system.platform)
+                                )
+                            }
+                          >
+                            {t('uploadBios')}
+                          </button>
+                        )}
+                      </div>
+                    </ConsoleStatusCard>
                   </div>
                 )
             )}

@@ -9,6 +9,35 @@ import { createRpcs3Runtime } from '../src/main/services/rpcs3Runtime.js'
 const { coreBinary } = createRequire(import.meta.url)('./fixtures/core-archive.cjs')
 
 // All files are synthetic markers, never real emulator, game or firmware binaries.
+test('status exposes only a release version matching the physical executable', (t) => {
+  const f = fixture(t)
+  f.executable()
+  f.firmware()
+  const stat = fs.statSync(f.runtime.executable)
+  const metadata = path.join(f.runtime.directory, 'zenith-release.json')
+  assert.equal(f.runtime.status().installedVersion, null)
+  fs.writeFileSync(
+    metadata,
+    JSON.stringify({
+      installedVersion: 'v0.0.38-12345',
+      executableSize: stat.size,
+      executableMtimeMs: stat.mtimeMs
+    })
+  )
+  assert.equal(f.runtime.status().installedVersion, 'v0.0.38-12345')
+  fs.appendFileSync(f.runtime.executable, 'changed')
+  assert.equal(f.runtime.status().installedVersion, null)
+  fs.writeFileSync(metadata, '{broken')
+  assert.equal(f.runtime.status().installedVersion, null)
+  assert.equal(
+    f.runtime.status().ready,
+    true,
+    'Optional metadata cannot invalidate a working runtime'
+  )
+  fs.unlinkSync(f.runtime.executable)
+  assert.equal(f.runtime.status().ready, false)
+})
+
 function fixture(t, platform = 'win32') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-rpcs3-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -180,7 +209,10 @@ test('active keyboard profile is migrated with a backup; other players and unrel
   })
   assert.equal(f.runtime.prepareLaunch(f.game).success, true)
   assert.equal(readYaml(custom)['Player 1 Input'].Config.Cross, 'A')
-  assert.deepEqual(readYaml(custom)['Player 2 Input'], original['Player 2 Input'])
+  assert.deepEqual(readYaml(custom)['Player 2 Input'], {
+    ...original['Player 2 Input'],
+    Config: { Cross: 'Circle', 'PS Button': '' }
+  })
   assert.deepEqual(readYaml(custom + '.zenith-backup'), original)
   assert.equal(fs.existsSync(files.input), false, 'Do not create an unused default profile')
   assert.equal(readYaml(files.config).Audio['Master Volume'], 73)
@@ -188,7 +220,7 @@ test('active keyboard profile is migrated with a backup; other players and unrel
   assert.equal(readYaml(files.config).Video.Renderer, 'Vulkan')
 })
 
-test('existing XInput and PlayStation mappings are not overwritten', (t) => {
+test('existing controller mappings survive except the reserved PS/Home button', (t) => {
   const f = fixture(t)
   f.executable()
   f.firmware()
@@ -203,8 +235,35 @@ test('existing XInput and PlayStation mappings are not overwritten', (t) => {
     }
     writeYaml(input, data)
     assert.equal(f.runtime.prepareLaunch(f.game).success, true)
-    assert.deepEqual(readYaml(input), data)
+    assert.deepEqual(readYaml(input), {
+      ...data,
+      'Player 1 Input': { ...data['Player 1 Input'], Config: { Cross: 'custom', 'PS Button': '' } }
+    })
   }
+})
+
+test('game-window shortcuts and per-title PS buttons are disabled with original backups', (t) => {
+  const f = fixture(t)
+  f.executable()
+  f.firmware()
+  const files = profileFiles(f)
+  const ini = path.join(path.dirname(files.config), 'GuiConfigs/CurrentSettings.ini')
+  fs.mkdirSync(path.dirname(ini), { recursive: true })
+  const original = '[GSFrame]\ndisableKbHotkeys=false\ngeometry=abc\n[Other]\ntheme=dark\n'
+  fs.writeFileSync(ini, original)
+  const titleInput = path.join(path.dirname(files.config), 'input_configs/BLUS12345/Pad.yml')
+  writeYaml(titleInput, {
+    'Player 1 Input': { Handler: 'XInput', Config: { Cross: 'A', 'PS Button': 'Guide' } }
+  })
+  assert.equal(f.runtime.prepareLaunch(f.game).success, true)
+  assert.match(fs.readFileSync(ini, 'utf8'), /disableKbHotkeys=true/)
+  assert.match(fs.readFileSync(ini, 'utf8'), /geometry=abc/)
+  assert.match(fs.readFileSync(ini, 'utf8'), /\[Other\]\ntheme=dark/)
+  assert.equal(fs.readFileSync(ini + '.zenith-backup', 'utf8'), original)
+  assert.deepEqual(readYaml(titleInput)['Player 1 Input'].Config, { Cross: 'A', 'PS Button': '' })
+  const mtime = fs.statSync(ini).mtimeMs
+  assert.equal(f.runtime.prepareLaunch(f.game).success, true)
+  assert.equal(fs.statSync(ini).mtimeMs, mtime)
 })
 
 test('legacy settings are seeded; missing active profile falls back to Default', (t) => {
@@ -251,7 +310,10 @@ test('Linux applies cache settings in portable root without an unsupported XInpu
   writeYaml(input, settings)
   assert.equal(f.runtime.prepareLaunch(f.game).success, true)
   assert.equal(readYaml(path.join(f.runtime.configDirectory, 'config.yml')).Core['SPU Cache'], true)
-  assert.deepEqual(readYaml(input), settings)
+  assert.deepEqual(readYaml(input), {
+    ...settings,
+    'Player 1 Input': { ...settings['Player 1 Input'], Config: { 'PS Button': '' } }
+  })
   assert.equal(fs.existsSync(path.join(f.runtime.configDirectory, 'config/config.yml')), false)
 })
 

@@ -11,6 +11,27 @@ const api = {}
  * return cleanup functions.
  */
 const localGamesAPI = {
+  getWallpapers: () => ipcRenderer.invoke('wallpapers:list'),
+  saveWallpaper: (patch) => ipcRenderer.invoke('wallpapers:update', patch),
+  listFiles: (request) => ipcRenderer.invoke('files:list', request),
+  previewFile: (token) => ipcRenderer.invoke('files:preview', token),
+  summarizeFolder: (token) => ipcRenderer.invoke('files:folder-summary', token),
+  importWallpaper: (token) => ipcRenderer.invoke('wallpapers:import', token),
+  deleteWallpaper: (options) => ipcRenderer.invoke('wallpapers:delete', options),
+  getDownloads: () => ipcRenderer.invoke('downloads:list'),
+  clearDownloadHistory: () => ipcRenderer.invoke('downloads:clear-history'),
+  checkUpdates: () => ipcRenderer.invoke('updates:check'),
+  installUpdate: (confirmed) => ipcRenderer.invoke('updates:install', { confirmed }),
+  updateEmulators: () => ipcRenderer.invoke('emulators:update'),
+  updateSoftware: () => ipcRenderer.invoke('software:update'),
+  onDownloadsProgress: (callback) => {
+    const listener = (_event, tasks) => callback(tasks)
+    ipcRenderer.on('downloads:progress', listener)
+    return () => ipcRenderer.removeListener('downloads:progress', listener)
+  },
+  rescrapeGame: (game) => ipcRenderer.invoke('games:rescrape', game),
+  getMediaPreferences: () => ipcRenderer.invoke('get-media-preferences'),
+  saveMediaPreferences: (patch) => ipcRenderer.invoke('save-media-preferences', patch),
   setGamePlatform: (gameId, platform) =>
     ipcRenderer.invoke('set-game-platform', { gameId, platform }),
   /** Installed title changes invalidate the library; return an unsubscribe function. */
@@ -21,9 +42,9 @@ const localGamesAPI = {
   },
   /** Confirmation is supplied only after the user accepts the download prompt. */
   downloadRpcs3: (confirmed = false) => ipcRenderer.invoke('download-rpcs3', { confirmed }),
-  /** Native pickers own the input paths; renderer cannot submit arbitrary files/CLI options. */
-  installPs3Firmware: () => ipcRenderer.invoke('install-ps3-firmware'),
-  installPs3Package: () => ipcRenderer.invoke('install-ps3-package'),
+  /** Firmware and PKG each require a purpose-bound, one-use in-app browser token. */
+  installPs3Firmware: (token) => ipcRenderer.invoke('install-ps3-firmware', token),
+  installPs3Package: (token) => ipcRenderer.invoke('install-ps3-package', token),
   cancelRpcs3Install: () => ipcRenderer.invoke('cancel-rpcs3-install'),
   onRpcs3InstallProgress: (callback) => {
     const listener = (_event, progress) => callback(progress)
@@ -52,10 +73,10 @@ const localGamesAPI = {
    */
   quitApp: () => ipcRenderer.invoke('quit-app'),
   /**
-   * Open the native ROM picker and copy supported selections to the central library. Invokes
-   * add-games; callers receive its Promise result.
+   * Consume Main-issued file-browser tokens and copy supported selections to the central
+   * library. Raw paths cannot authorize imports. Invokes add-games; returns a Promise result.
    */
-  addGames: () => ipcRenderer.invoke('add-games'),
+  addGames: (tokens) => ipcRenderer.invoke('add-games', tokens),
   /**
    * Resolve a library ID and remove its central ROM, caches, and records after pending writers
    * settle. Invokes delete-game; callers receive its Promise result.
@@ -96,6 +117,7 @@ const localGamesAPI = {
    * Hide the session panel and restore emulator focus if a child is still running. Invokes
    * resume-session; callers receive its Promise result.
    */
+  restartSession: () => ipcRenderer.invoke('restart-session'),
   resumeSession: () => ipcRenderer.invoke('resume-session'),
   /**
    * Request termination of the active emulator; normal exit handling restores the dashboard.
@@ -245,6 +267,11 @@ const localGamesAPI = {
    *
    * @param {Function} callback - Renderer callback receiving only application payloads; unsubscribe on cleanup.
    */
+  onGameLoading: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('game-loading', listener)
+    return () => ipcRenderer.removeListener('game-loading', listener)
+  },
   onGameStarted: (callback) => {
     /**
      * Forward only the application payload to the registered renderer callback; keep Electron event

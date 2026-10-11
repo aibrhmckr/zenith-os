@@ -139,8 +139,13 @@ and the existing launcher/hotkeys/local-games Electron regression tests.
   archives are capped at 200 MiB, expanded content at 2 GiB and 20,000 entries.
 - The packaged 7zip-bin helper lists entries, tests archive integrity, then extracts
   into a private sibling staging directory. Each command has a 120-second timeout.
-  Paths, duplicates, junctions, symlinks, hardlinks, Windows device/ADS names and
-  firmware/profile content are rejected. Extracted types/sizes and x64 PE are checked.
+  Malformed paths, duplicates, junctions, symlinks, hardlinks and Windows device/ADS
+  names are rejected. Safe profile/firmware entries (including
+  `config`, `config.yml`, `portable` and `dev_hdd0`) are skipped. An exact UTF-8
+  7-Zip include list extracts only `.exe`/`.dll` files outside those trees, with
+  wildcard matching disabled; this applies to initial installs and updates.
+  Skipped entries never reach staging or the live runtime. Extracted types/sizes
+  and x64 PE are checked.
 - Only newly verified downloads have their NTFS Zone.Identifier stream removed;
   other stream-removal errors fail the operation. System security policy and existing
   manually installed binaries are untouched.
@@ -188,14 +193,14 @@ are serialized by Main. Quit cancels maintenance and waits for its cleanup.
 | Channel / preload API                                     | Payload             | Result / behavior                                                                                                                                           |
 | --------------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | download-rpcs3 / downloadRpcs3(confirmed=false)           | {confirmed:boolean} | Without explicit true: {success:false,canceled:true}. With consent: verified download, {success:true,status,version?}; errors {success:false,error,status}. |
-| install-ps3-firmware / installPs3Firmware()               | none                | Native Main-owned PUP picker, headless installation, {success:true,status,titleId:null}; canceled picker returns canceled; errors remain visible.           |
-| install-ps3-package / installPs3Package()                 | none                | Native PKG picker, header/title checks and headless install; {success:true,status,titleId}. Refreshes installed titles and sends library-changed.           |
+| install-ps3-firmware / installPs3Firmware(token)          | firmware-purpose browser token | In-app PUP selection, headless installation, {success:true,status,titleId:null}; picker cancellation sends no install IPC; errors remain visible. |
+| install-ps3-package / installPs3Package(token)                 | none                | In-app PKG browser token, header/title checks and headless install; {success:true,status,titleId}. Refreshes installed titles and sends library-changed.           |
 | cancel-rpcs3-install / cancelRpcs3Install()               | none                | Abort the single maintenance job; child exit and cleanup release the lock.                                                                                  |
 | rpcs3-install-progress / onRpcs3InstallProgress(callback) | Main event          | {phase,received?,total?} or null when idle; preload returns unsubscribe.                                                                                    |
 | get-rpcs3-status                                          | none                | Adds hostPlatform and operation to the physical runtime status.                                                                                             |
 
 **Rpcs3Status.jsx** is shared by launch recovery and System Settings. It offers explicit
-inline download consent, progress, native firmware/PKG pickers, cancel, errors, recheck
+inline download consent, progress, in-app PUP/PKG browser, cancel, errors, recheck
 and an optional Launch button after readiness. Actions are disabled during a job.
 Closing the panel does not cancel an active job; reopening reads its operation status.
 No renderer-supplied executable, install path, URL or shell command is accepted.
@@ -307,3 +312,122 @@ mtimes, Linux paths and failed writes. The Electron launcher test checks actual
 on-disk configuration before its mocked RPCS3 child starts, and verifies that
 invalid configuration prevents spawning. Actual controller hardware and repeat
 launch timings still require an RPCS3 smoke test.
+
+## PS3 media discovery and download permissions
+
+Settings → Media & Downloads exposes four independent downloadCovers, downloadBackgrounds, downloadVideos
+and downloadAudio switches, all defaulting to true. Explicit legacy disabled
+preferences are preserved when upgrading. Main persists them under media in userData/zenith-preferences.json
+before returning success; hotkey patches share the same atomic write queue.
+get-media-preferences and save-media-preferences are exposed through preload.
+Disabled kinds cannot issue search, metadata or binary requests, including manual
+rescans. Active requests are aborted when their permission is revoked. Cached
+media remains usable offline; preview playback/audio settings remain separate.
+
+Artwork priority is GameTDB cover, HD online cache, Libretro cache, then embedded game artwork.
+Folder/installed PKG records read ICON0.PNG and PIC1.PNG next to PARAM.SFO;
+PIC0.PNG is an optional overlay. Folder titles use PARAM.SFO, never EBOOT.
+ps3IsoMedia.js uses full 7-Zip e with -r and -ssc- to extract only ICON0.PNG,
+PIC1.PNG and PARAM.SFO into a unique temporary directory inside the game's
+userData cache. It does not use -so. Nonzero exit/header warnings are tolerated
+only when individually validated members were produced. PNGs are bounded to
+20 MiB, SFO to 1 MiB, and the process to 15 seconds. The temporary tree is always
+cleaned up; final names are fixed by Main. Source identity avoids repeated extraction.
+
+PS3 TITLE_ID comes from folder or ISO PARAM.SFO; ISO metadata is cached with its
+source identity in embedded-title.json. GameTDB requests cover/US, cover/EN, then
+cover/JA under https://art.gametdb.com/ps3/ for a validated product ID. JPEG frame
+validation and a 20 MiB limit precede publishing cover-gametdb.jpg. This cover
+has priority over other cached boxart; the cover download preference gates it.
+
+The Libretro platform is Sony - PlayStation 3. Archive searches optional
+PS3-scoped portrait boxart and fanart PNGs, ranks metadata dimensions, and
+validates downloaded dimensions: portrait width >=600, landscape >=1920×1080.
+4K candidates rank ahead of smaller ones. Files are cover-hd.png / fanart.png,
+limited to 20 MiB. Availability is provider-dependent; no upscaling is implied.
+
+Video discovery first requests metadata for sony-playstation-3-video-snaps and
+SonyPlaystation3VideoSnaps directly. Missing/restricted/nonmatching items fall back
+to normal discovery; provider availability is not assumed. Discovery accepts PS3 platform aliases and HQ/HD-labeled Video Snaps packs,
+matching exact game titles or TITLE_ID filenames. Individual preview/gameplay
+search remains a fallback. MP4s retain the 60-second/5 MiB bounds and are written
+to preview.mp4; requests time out after 15 seconds. No media is bundled.
+
+Q/Y → Search for media again passes {id,gameId,platform,title,path} to games:rescrape.
+Main verifies all fields against its own library record before doing any work.
+Allowed cover/background/video/audio kinds are queried again even with an existing cache, which
+is replaced only after successful validation. Main validates library membership.
+Background updates persist to games.json and reach React via game-media-updated,
+including covers and fanart. Enabled cached music is also refreshed on explicit retry.
+
+7zip-bin-full 26.3.1 supplies unmodified 7-Zip 26.03 for ISO/UDF (the existing
+reduced 7za does not support these formats). electron-builder unpacks it outside
+ASAR and preserves the utility DLL; emulator-core exclusions remain unchanged.
+Notices and source links are in resources/licenses. No native helper binaries
+are committed to Git. Tests include real extraction of a synthetic ISO plus
+mocked Archive/CDN data and actual Electron Settings/preload/React interaction.
+
+The explicit rescrape IPC waits for the selected game's preview jobs and returns
+{success:true,game,warning}; it does not wait behind unrelated automatic downloads.
+Duplicate same-game requests coalesce, and queued automatic work is superseded
+without duplicate writes. Invalid identity returns {success:false,error}. The
+renderer shows completion/errors and updates its card using versioned media URLs
+(path + mtime + size), avoiding stale Chromium image/video cache entries.
+
+[Scraper] terminal logs expose title/platform, four permissions, queried URLs,
+HTTP/network errors, validation failures and successful paths. [7-Zip] logs
+report ICON0/PIC1 extraction or misses. Cover/background cooldowns are separate.
+
+## Title ID recovery, startup masking and binary updates
+
+ISO extraction version 3 also reads PS3_DISC.SFB when PARAM.SFO is unavailable.
+TITLE_ID values normalize whitespace, NUL padding and regional ID hyphens without
+substituting another game's ID. GameTDB US/EN/JA covers take precedence over embedded
+ICON0. Explicit rescrape refreshes the extraction; a newly recovered ID bypasses
+an earlier unsuccessful cover lookup cooldown.
+
+Windows startup keeps Zenith above compilation dialogs. The launch config enables
+fullscreen, disables focus-loss pausing and PPU hints, and uses a known FPS title
+format. The PID-bound PowerShell watcher emits `ready` only after a visible game
+window reports positive FPS. Main then sends `game-started` and releases topmost
+status. A late ready signal never closes an open session menu. F10/Escape/chord
+and a 120-second fallback expose the session menu instead of trapping the user.
+This is window-title readiness, not guaranteed visual content detection; custom
+per-title overrides may require the manual fallback. Linux uses fullscreen/hint
+configuration but does not use this Windows watcher.
+
+The Download Center (`D` / `RT`) streams task status through `downloads:progress`.
+`emulators:update` is serialized with launch/setup and updates only installed
+cores plus Windows RPCS3. RPCS3 update mode replaces verified EXE/DLL files only;
+portable data, dev_hdd0, firmware, saves and config are preserved. Failed publish
+operations roll back. User application updates use the separate electron-updater
+GitHub feed `aibrhmckr/zenith-os`, with explicit restart/install and differential
+NSIS artifacts. No firmware or RPCS3 executable is included in source/releases.
+
+
+## Managed input isolation and safe restart
+
+The current configuration step also clears PS Button in global and per-title input
+profiles, preserving other custom mappings. GSFrame/disableKbHotkeys=true in
+GuiConfigs/CurrentSettings.ini disables game-window Home/Restart keyboard shortcuts.
+Original edited files receive a .zenith-backup. Compilation and keyboard-mode hints
+are disabled; game-requested system dialogs remain enabled.
+
+On Windows, the startup watcher reasserts Zenith TOPMOST every 250ms and requires
+three consecutive positive-FPS samples. Opening and dismissing Zenith's menu during
+compilation never removes the mask prematurely. This is a window-title heuristic,
+not a Vulkan first-frame hook; Linux has no equivalent native watcher yet.
+
+restart-session uses stopForRestart to terminate the existing child and await close
+plus launch cleanup before issuing a fresh --no-gui launch. It does not invoke the
+RPCS3 internal restart shortcut. A ten-second shutdown timeout aborts the restart.
+game-loading re-arms the renderer mask; epoch tracking isolates old launch callbacks.
+The Electron regression test exercises two successive restarts and menu use before
+readiness with synthetic processes, without launching a real game.
+
+Install PKG now uses FileBrowser (kind package) and installPs3Package(token).
+Main revalidates this one-use selection before installation. Add Game uses games
+purpose tokens and shares the existing PKG installer. Firmware now uses the same
+in-app browser with a separate `firmware` purpose and case-insensitive `.pup` filter.
+Tokens cannot be interchanged between the two installers. This supersedes the
+stage-3 native picker contract above.

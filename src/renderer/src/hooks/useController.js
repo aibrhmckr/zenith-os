@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createCursorVisibility } from './cursorVisibility'
 
 /**
  * Normalize optional vendor battery data into 0–100 percent; return null when the standard
@@ -45,11 +46,17 @@ export default function useController(onFrame) {
   useEffect(() => {
     callbackRef.current = onFrame
   }, [onFrame])
-  /**
-   * Own one requestAnimationFrame chain plus physical-input listeners; cancel everything when
-   * unmounted.
-   */
+  /** Own one input poller and cursor idle timer; dispose both on unmount. */
   useEffect(() => {
+    const cursor = createCursorVisibility({
+      setHidden: (hidden) => {
+        document.documentElement.dataset.cursorHidden = String(hidden)
+      }
+    })
+    const pointerMove = (event) => {
+      if (!event.pointerType || event.pointerType === 'mouse') cursor.move()
+    }
+    window.addEventListener('pointermove', pointerMove, true)
     let frameId
     /**
      * Previous button states used to derive press and release edges.
@@ -172,6 +179,7 @@ export default function useController(onFrame) {
           )
         ) {
           changeMode('gamepad')
+          cursor.gamepad()
         }
         const direction =
           buttons[15] || axes[0] > 0.5
@@ -219,6 +227,8 @@ export default function useController(onFrame) {
       cancelAnimationFrame(frameId)
       window.removeEventListener('keydown', keyboard, true)
       window.removeEventListener('pointerdown', keyboard, true)
+      window.removeEventListener('pointermove', pointerMove, true)
+      cursor.dispose()
     }
   }, [])
   return { mode, modeRef, controller }

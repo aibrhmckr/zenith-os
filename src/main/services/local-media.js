@@ -1,7 +1,7 @@
 import fs from 'node:fs'
-import { pathToFileURL } from 'node:url'
-import { basename, extname } from 'node:path'
-import { createHash } from 'node:crypto'
+import { pathToFileURL, fileURLToPath } from 'node:url'
+import { basename, extname, isAbsolute, resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 
 /**
@@ -9,12 +9,24 @@ import { Readable } from 'node:stream'
  * renderer-supplied path.
  */
 const allowed = new Map()
+/** Short-lived browser preview capability, independent of persistent library URLs. */
+export function previewMediaUrl(file) {
+  const url = `game-media://local/${randomUUID()}/${encodeURIComponent(basename(file))}`
+  allowed.set(url, file)
+  return { url, revoke: () => allowed.delete(url) }
+}
+/** Revoke all revisions of one deleted wallpaper without affecting its neighbours. */
+export function revokeMediaFile(target) {
+  for (const [url, file] of allowed) if (file === target) allowed.delete(url)
+}
 /**
  * Content types supported by local media playback, including application WAV effects.
  */
 const TYPES = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.webm': 'video/webm',
   '.mp3': 'audio/mpeg',
   '.mp4': 'video/mp4',
   '.wav': 'audio/wav'
@@ -37,10 +49,41 @@ export function revokeMediaDirectory(directory) {
  */
 export function mediaUrl(file) {
   if (!file) return null
-  const key = createHash('sha256').update(pathToFileURL(file).href).digest('hex')
+  // Replacing a cached file must also replace its renderer URL; otherwise Chromium can
+  // keep displaying/playing the previous contents after an explicit rescrape.
+  const stat = fs.statSync(file, { throwIfNoEntry: false })
+  const key = createHash('sha256')
+    .update(`${pathToFileURL(file).href}:${stat?.mtimeMs}:${stat?.size}`)
+    .digest('hex')
   const url = `game-media://local/${key}/${encodeURIComponent(basename(file))}`
   allowed.set(url, file)
   return url
+}
+
+/** Resolve library-owned logo aliases in Main; Vite cannot display raw disk paths. */
+export function gameLogoUrl(game) {
+  for (const candidate of [game.media?.logo, game.logoUrl, game.clearLogo, game.logoPath]) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue
+    if (allowed.has(candidate)) return candidate
+    try {
+      const file = candidate.startsWith('file:')
+        ? fileURLToPath(candidate)
+        : isAbsolute(candidate)
+          ? candidate
+          : game.mediaDirectory
+            ? resolve(game.mediaDirectory, candidate)
+            : null
+      if (
+        file &&
+        /\.(png|jpg|webp)$/i.test(file) &&
+        fs.statSync(file, { throwIfNoEntry: false })?.isFile()
+      )
+        return mediaUrl(file)
+    } catch {
+      /* Missing/stale aliases are optional; render the title instead. */
+    }
+  }
+  return null
 }
 
 // Support Chromium's video/audio byte-range requests without buffering whole files.

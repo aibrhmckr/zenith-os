@@ -34,7 +34,10 @@ test('core install coalesces shared cores, caches DLL and has no partial files',
   assert.equal(cores.find('GameCube'), 'dolphin_libretro.dll')
   assert((await cores.install('Wii')).success)
   assert.equal(calls, 1)
-  assert.deepEqual(fs.readdirSync(join(root, 'cores')), ['dolphin_libretro.dll'])
+  assert.deepEqual(fs.readdirSync(join(root, 'cores')), [
+    'dolphin_libretro.dll',
+    'dolphin_libretro.dll.zenith-update.json'
+  ])
   assert.equal((await cores.install('__proto__')).success, false)
 })
 test('missing preferred PS2 core uses LRPS2 fallback', async (t) => {

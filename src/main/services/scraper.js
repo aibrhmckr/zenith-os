@@ -1,6 +1,14 @@
+import {
+  createPs3IsoExtractor,
+  cachedPs3IsoMedia,
+  cachedPs3IsoTitleId,
+  normalizePs3TitleId
+} from './ps3IsoMedia.js'
+import { mediaPreferences } from './preferences.js'
 import fs from 'node:fs'
 import { join, parse, extname } from 'node:path'
 import { createHash } from 'node:crypto'
+import { readPs3EmbeddedMedia, readPs3FolderTitle, readPs3FolderTitleId } from './rpcs3Library.js'
 import { createMediaDownloader } from './mediaScraper.js'
 import { mediaRoot as getMediaRoot, gameMediaDirectory } from './mediaPaths.js'
 
@@ -14,6 +22,7 @@ const CDN = 'https://thumbnails.libretro.com/'
  * local artwork.
  */
 const SYSTEMS = {
+  PS3: 'Sony - PlayStation 3',
   PS2: 'Sony - PlayStation 2',
   PS1: 'Sony - PlayStation',
   PSP: 'Sony - PlayStation Portable',
@@ -36,7 +45,7 @@ const KINDS = { boxart: 'Named_Boxarts', snap: 'Named_Snaps', titleScreen: 'Name
 /**
  * Fixed cache basenames; remote filenames never choose filesystem destinations.
  */
-const NAMES = { boxart: 'boxart.png', snap: 'snap.png', titleScreen: 'title.png' }
+const NAMES = { boxart: 'boxart.png', snap: 'snap.png', titleScreen: 'title.png', logo: 'logo.png' }
 /**
  * Milliseconds between automatic retries of missing artwork or preview kinds.
  */
@@ -102,7 +111,10 @@ const normalized = (name) =>
  *
  * @param {string} file - Local file path, except ranking callbacks where it is an Archive file metadata entry.
  */
-const exists = (file) => fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true
+const exists = (file) => {
+  const stat = fs.statSync(file, { throwIfNoEntry: false })
+  return stat?.isFile() === true && stat.size > 0
+}
 
 // Dependency injection keeps CDN tests offline and never needs credentials.
 /**
@@ -121,6 +133,10 @@ export function createScraper({
   onMediaUpdated /**
    * Optional notification defaults to a no-op so callers can omit a progress callback.
    */ = () => {},
+  getPreferences = () => ({}),
+  extractIso = createPs3IsoExtractor({ userData }),
+  onDownload = () => {},
+  logger = console,
   mediaTimeoutMs = 15000
 }) {
   /**
@@ -165,6 +181,9 @@ export function createScraper({
    * Deduplicates games already waiting in the optional media queue.
    */
   const pendingMedia = new Set()
+  // Tokens let explicit retries supersede queued automatic jobs without duplicate writes.
+  const mediaTokens = new Map()
+  const mediaTasks = new Map()
   /**
    * Deletion tombstones checked before and after network work to prevent cache resurrection.
    */
@@ -173,7 +192,61 @@ export function createScraper({
    * Per-game active preview tasks that deletion must await.
    */
   const runningMedia = new Map()
-  const downloadMedia = createMediaDownloader({ userData, fetchImpl, timeoutMs: mediaTimeoutMs })
+  const preferenceKey = {
+    boxart: 'downloadCovers',
+    logo: 'downloadCovers',
+    snap: 'downloadBackgrounds',
+    titleScreen: 'downloadBackgrounds',
+    fanart: 'downloadBackgrounds',
+    video: 'downloadVideos',
+    music: 'downloadAudio'
+  }
+  const allowed = (kind) => mediaPreferences(getPreferences())[preferenceKey[kind]] === true
+  // A removed/truncated cache entry is repairable immediately; negative lookups keep their cooldown.
+  const lostCache = (game, kind) => {
+    const file = records[game.gameId]?.media?.[kind === 'fanart' ? 'snap' : kind]
+    return Boolean(file) && !exists(file)
+  }
+  const log = (message) => logger.log('[Scraper] ' + message)
+  const controllers = new Map()
+  const guardedFetch =
+    (kind) =>
+    async (url, options = {}) => {
+      if (!allowed(kind)) throw Error('Media download disabled')
+      let controller = controllers.get(kind)
+      if (!controller || controller.signal.aborted)
+        controllers.set(kind, (controller = new AbortController()))
+      log('Sorgulanan URL: ' + url)
+      try {
+        const response = await fetchImpl(url, {
+          ...options,
+          signal: options.signal
+            ? AbortSignal.any([options.signal, controller.signal])
+            : controller.signal
+        })
+        if (!response.ok)
+          log('Başarısız İndirmeler: ' + kind + ' HTTP ' + response.status + ' ' + url)
+        return response
+      } catch (error) {
+        log('Başarısız İndirmeler: ' + kind + ' ' + error.message)
+        throw error
+      }
+    }
+  const cancelDisabledRequests = () => {
+    for (const [kind, controller] of controllers) if (!allowed(kind)) controller.abort()
+  }
+  const downloaders = Object.fromEntries(
+    ['music', 'video', 'logo', 'boxart', 'fanart'].map((kind) => [
+      kind,
+      createMediaDownloader({
+        userData,
+        fetchImpl: guardedFetch(kind),
+        timeoutMs: mediaTimeoutMs,
+        onDiagnostic: log,
+        onDownload
+      })
+    ])
+  )
 
   // Images and audio finish independently; serialize manifest mutations to avoid lost updates.
   /**
@@ -219,13 +292,14 @@ export function createScraper({
     return {
       gameId: game.gameId,
       fileName: game.fileName,
-      title: game.title,
-      platform: game.systemShort,
       region: game.region,
       year: null,
       developer: null,
       genre: null,
       ...previous,
+      title: game.title,
+      platform: game.systemShort,
+      titleId: game.titleId || null,
       ...(game.rpcs3Installed ? { title: game.title, titleId: game.titleId, path: game.path } : {}),
       media: game.media
     }
@@ -238,61 +312,103 @@ export function createScraper({
    * @param {*} games - Input used by this helper; see its operation contract above.
    * @param {boolean} force - Bypass provider lookup cooldowns for an explicit rescan.
    */
-  function queueMedia(games, force) {
-    if (force) downloadMedia.clearCatalogs()
+  function queueMedia(games, force, priority = false) {
+    if (force) for (const provider of Object.values(downloaders)) provider.clearCatalogs()
     for (const original of games) {
       const game = enrich(original)
       removed.delete(game.gameId)
       if (pendingMedia.has(game.gameId)) continue
-      const kinds = ['music', 'video'].filter(
+      if (!force && ['boxart', 'snap', 'music', 'video'].every((kind) => game.media[kind])) continue
+      const kinds = (
+        game.systemShort === 'PS3'
+          ? ['music', 'video', 'logo', 'boxart', 'fanart']
+          : ['music', 'video']
+      ).filter(
         /**
          * Retain only ['music', 'video'] entries satisfying kinds's local predicate; excluded values do not reach the next stage.
          *
          * @param {*} kind - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
         (kind) =>
-          !game.media[kind] &&
-          (force || Date.now() - (records[game.gameId]?.archiveCheckedAt?.[kind] || 0) >= DAY)
+          allowed(kind) &&
+          (force ||
+            !(kind === 'boxart' || kind === 'fanart'
+              ? exists(join(game.mediaDirectory, NAMES[kind === 'fanart' ? 'snap' : 'boxart'])) ||
+                exists(
+                  join(game.mediaDirectory, kind === 'boxart' ? 'cover-hd.png' : 'fanart.png')
+                ) ||
+                (kind === 'boxart' && exists(join(game.mediaDirectory, 'cover-gametdb.jpg')))
+              : game.media[kind])) &&
+          (force ||
+            lostCache(game, kind) ||
+            (kind === 'boxart' &&
+              game.titleId &&
+              records[game.gameId]?.coverTitleId !== game.titleId) ||
+            Date.now() - (records[game.gameId]?.archiveCheckedAt?.[kind] || 0) >= DAY)
       )
       if (!kinds.length) continue
       pendingMedia.add(game.gameId)
-      // One game at a time; its audio/video requests are independent of artwork and each other.
-      mediaQueue = mediaQueue
+      const token = {}
+      mediaTokens.set(game.gameId, token)
+      // A manual request bypasses other games' optional previews; its own active job is awaited.
+      const scheduled = (priority ? Promise.resolve() : mediaQueue)
         .then(
           /**
            * Continue queueMedia after the preceding asynchronous stage resolves; the returned value or Promise feeds the same chain.
            */
           async () => {
-            if (!activeGames.has(game.gameId) || removed.has(game.gameId)) return
-            const task = downloadMedia(enrich(game), {
-              kinds,
-              /**
-               * Merge a completed media lookup into the manifest and notify only if the game still exists and
-               * a usable file was downloaded.
-               *
-               * @param {string} kind - Media category or modal type selecting this operation's behavior.
-               * @param {*} path - Input used by this helper; see its operation contract above.
-               */
-              onResult: async (kind, path) => {
-                let updated
-                await saveRecords(
+            if (
+              mediaTokens.get(game.gameId) !== token ||
+              !activeGames.has(game.gameId) ||
+              removed.has(game.gameId)
+            )
+              return
+            const task = Promise.all(
+              kinds.filter(allowed).map((kind) =>
+                downloaders[kind](enrich(game), {
+                  kinds: [kind],
+                  force,
                   /**
-                   * Mutate task's manifest only inside the serialized write queue to avoid lost concurrent updates.
+                   * Merge a completed media lookup into the manifest and notify only if the game still exists and
+                   * a usable file was downloaded.
+                   *
+                   * @param {string} kind - Media category or modal type selecting this operation's behavior.
+                   * @param {*} path - Input used by this helper; see its operation contract above.
                    */
-                  () => {
-                    const current = activeGames.get(game.gameId)
-                    if (!current) return
-                    updated = enrich(current)
-                    const previous = records[game.gameId]
-                    records[game.gameId] = recordFor(updated, {
-                      ...previous,
-                      archiveCheckedAt: { ...previous?.archiveCheckedAt, [kind]: Date.now() }
-                    })
+                  onResult: async (kind, path) => {
+                    log(
+                      (path ? 'Başarılı' : 'Başarısız') +
+                        ' İndirmeler: ' +
+                        game.title +
+                        ' / ' +
+                        kind +
+                        (path
+                          ? ' → ' + path
+                          : ' (bulunamadı, geçersiz yanıt veya indirme hatası; yerel dosya korunur)')
+                    )
+                    if (!allowed(kind)) return
+                    let updated
+                    await saveRecords(
+                      /**
+                       * Mutate task's manifest only inside the serialized write queue to avoid lost concurrent updates.
+                       */
+                      () => {
+                        const current = activeGames.get(game.gameId)
+                        if (!current) return
+                        updated = enrich(current)
+                        const previous = records[game.gameId]
+                        records[game.gameId] = recordFor(updated, {
+                          ...previous,
+                          archiveCheckedAt: { ...previous?.archiveCheckedAt, [kind]: Date.now() },
+                          ...(kind === 'boxart' ? { coverTitleId: game.titleId || null } : {})
+                        })
+                      }
+                    )
+                    if (path && updated && activeGames.has(game.gameId)) onMediaUpdated(updated)
                   }
-                )
-                if (path && updated && activeGames.has(game.gameId)) onMediaUpdated(updated)
-              }
-            })
+                })
+              )
+            )
             runningMedia.set(game.gameId, task)
             try {
               await task
@@ -313,8 +429,16 @@ export function createScraper({
           /**
            * Release queueMedia's pending-work bookkeeping after either success or failure.
            */
-          () => pendingMedia.delete(game.gameId)
+          () => {
+            if (mediaTokens.get(game.gameId) === token) {
+              pendingMedia.delete(game.gameId)
+              mediaTokens.delete(game.gameId)
+              mediaTasks.delete(game.gameId)
+            }
+          }
         )
+      mediaTasks.set(game.gameId, scheduled)
+      if (!priority) mediaQueue = scheduled
     }
   }
 
@@ -326,9 +450,34 @@ export function createScraper({
    */
   function enrich(game) {
     const gameId = gameMediaId(game)
-    const metadata = game.rpcs3Installed
-      ? { title: game.title, region: null }
-      : cleanGameName(game.fileName)
+    // Rescanning recreates ROM records. Rehydrate presentation fields from games.json,
+    // but never restore cached executable paths or platform assignments over the scanner.
+    const saved = records[gameId] || {}
+    const presentation = Object.fromEntries(
+      [
+        'year',
+        'releaseYear',
+        'releaseDate',
+        'genre',
+        'genres',
+        'category',
+        'publisher',
+        'developer',
+        'synopsis',
+        'overview',
+        'description',
+        'plot',
+        'summary',
+        'clearLogo',
+        'logoPath',
+        'format'
+      ].map((key) => [key, game[key] ?? saved[key] ?? null])
+    )
+    const folderTitle = readPs3FolderTitle(game)
+    const metadata =
+      game.rpcs3Installed || folderTitle
+        ? { title: folderTitle || game.title, region: null }
+        : cleanGameName(game.fileName)
     const directory = gameMediaDirectory(userData, gameId)
     const media = Object.fromEntries(
       Object.entries(NAMES).map(
@@ -343,6 +492,21 @@ export function createScraper({
         }
       )
     )
+    // Online cache first; game-owned art is the offline fallback.
+    const embedded = {
+      ...readPs3EmbeddedMedia(game),
+      ...cachedPs3IsoMedia(userData, { ...game, gameId })
+    }
+    for (const [kind, file] of Object.entries(embedded))
+      if (!media[kind] && file) media[kind] = file
+    for (const [kind, name] of [
+      ['boxart', 'cover-hd.png'],
+      ['boxart', 'cover-gametdb.jpg'],
+      ['snap', 'fanart.png']
+    ]) {
+      const file = join(directory, name)
+      if (exists(file)) media[kind] = file
+    }
     for (const [kind, folder, suffix, cachedName] of [
       ['music', 'music', 'mp3', 'theme.mp3'],
       ['video', 'videos', 'mp4', 'preview.mp4']
@@ -352,7 +516,20 @@ export function createScraper({
           exists
         ) || null
     }
-    return { ...game, ...metadata, gameId, media, mediaDirectory: directory }
+    const titleId =
+      normalizePs3TitleId(game.titleId) ||
+      readPs3FolderTitleId(game) ||
+      cachedPs3IsoTitleId(userData, { ...game, gameId })
+    return {
+      ...game,
+      ...presentation,
+      ...metadata,
+      region: metadata.region || game.region || saved.region || null,
+      titleId,
+      gameId,
+      media,
+      mediaDirectory: directory
+    }
   }
 
   /**
@@ -362,8 +539,11 @@ export function createScraper({
    * @param {string|URL} url - Provider URL or parsed URL subject to the helper's origin/path policy.
    * @param {number} limit - Maximum accepted response bytes.
    */
-  async function request(url, limit) {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(8000), redirect: 'error' })
+  async function request(url, limit, kind, progress = () => {}) {
+    const response = await guardedFetch(kind)(url, {
+      signal: AbortSignal.timeout(8000),
+      redirect: 'error'
+    })
     if (response.status === 404) {
       await response.body?.cancel()
       return null
@@ -386,6 +566,7 @@ export function createScraper({
         size += value.length
         if (size > limit) throw new Error('Medya boyutu sınırı aşıldı')
         chunks.push(Buffer.from(value))
+        progress({ received: size, total: Number(response.headers.get('content-length')) || null })
       }
     } finally {
       await reader.cancel()
@@ -410,7 +591,7 @@ export function createScraper({
            * Complete the enclosing callback step owned by catalog; caller arguments and captured state determine this stage's result.
            */
           async () => {
-            const html = (await request(base, 8 * 1024 * 1024))?.toString('utf8') || ''
+            const html = (await request(base, 8 * 1024 * 1024, kind))?.toString('utf8') || ''
             const entries = []
             for (const match of html.matchAll(/href=["']([^"']+)["']/gi)) {
               try {
@@ -446,9 +627,21 @@ export function createScraper({
     onProgress /**
      * Optional notification defaults to a no-op so callers can omit a progress callback.
      */ = () => {},
-    { force = false } = {}
+    { force = false, gameId: targetId = null } = {}
   ) {
-    if (inFlight) return inFlight
+    if (inFlight) {
+      if (!targetId) return inFlight
+      await inFlight
+      return scan(games, onProgress, { force, gameId: targetId })
+    }
+    if (targetId && force) {
+      mediaTokens.delete(targetId)
+      pendingMedia.delete(targetId)
+      mediaTasks.delete(targetId)
+      await runningMedia.get(targetId)
+      if (inFlight) return scan(games, onProgress, { force, gameId: targetId })
+      if (removed.has(targetId)) throw Error('Game is no longer in the library.')
+    }
     inFlight = (
       /**
        * Complete the enclosing callback step owned by scan; caller arguments and captured state determine this stage's result.
@@ -464,7 +657,23 @@ export function createScraper({
             (game) => [gameMediaId(game), game]
           )
         )
-        queueMedia(games, force)
+        for (const original of games.filter(
+          (entry) => !targetId || gameMediaId(entry) === targetId
+        )) {
+          const game = enrich(original),
+            prefs = mediaPreferences(getPreferences())
+          log('İstek alındı: ' + game.title + ' (' + game.systemShort + ')')
+          log(
+            'Ayarlar: Kapak: ' +
+              prefs.downloadCovers +
+              ', Fanart: ' +
+              prefs.downloadBackgrounds +
+              ', Video: ' +
+              prefs.downloadVideos +
+              ', Ses: ' +
+              prefs.downloadAudio
+          )
+        }
         catalogs.clear()
         let offline = false
         let warning = null
@@ -481,9 +690,27 @@ export function createScraper({
             const index = cursor++
             let game = enrich(games[index])
             if (removed.has(game.gameId)) continue
+            const complete = ['boxart', 'snap', 'music', 'video'].every((kind) => game.media[kind])
+            if ((force || !complete) && (!targetId || targetId === game.gameId))
+              await extractIso(game, { force }).catch(() => {})
+            game = enrich(game)
+            if (!targetId || game.gameId === targetId) queueMedia([game], force, Boolean(targetId))
             const previous = records[game.gameId]
             let checkedAt = previous?.checkedAt || 0
-            if (!offline && (force || Date.now() - checkedAt > DAY)) {
+            const artworkCheckedAt = { ...previous?.artworkCheckedAt }
+            if (
+              (!targetId || game.gameId === targetId) &&
+              (force || !complete) &&
+              (allowed('boxart') || allowed('snap')) &&
+              !offline &&
+              (force ||
+                Object.keys(KINDS).some(
+                  (kind) =>
+                    allowed(kind) &&
+                    (lostCache(game, kind) || Date.now() - (artworkCheckedAt[kind] || 0) > DAY)
+                ))
+            ) {
+              let artworkFailed = false
               try {
                 const system =
                   extname(game.fileName).toLowerCase() === '.gb'
@@ -492,57 +719,113 @@ export function createScraper({
                 if (system) {
                   for (const kind of Object.keys(KINDS)) {
                     if (removed.has(game.gameId)) break
-                    if (game.media[kind] || offline) continue
-                    const entries = await catalog(system, kind)
-                    const candidates = entries.filter(
-                      /**
-                       * Retain only entries entries satisfying candidates's local predicate; excluded values do not reach the next stage.
-                       *
-                       * @param {*} entry - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-                       */
-                      (entry) => normalized(entry.title) === normalized(game.title)
+                    if (
+                      (!force && game.media[kind]) ||
+                      (!force &&
+                        !lostCache(game, kind) &&
+                        Date.now() - (artworkCheckedAt[kind] || 0) < DAY) ||
+                      offline ||
+                      !allowed(kind)
                     )
-                    candidates.sort(
-                      /**
-                       * Order candidates candidates deterministically before worker consumes the preferred result.
-                       *
-                       * @param {*} a - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-                       * @param {*} b - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-                       */
-                      (a, b) => {
+                      continue
+                    try {
+                      const entries = await catalog(system, kind)
+                      const candidates = entries.filter(
                         /**
-                         * Rank exact release filenames above region matches, using USA as a deterministic preference
-                         * when otherwise tied.
+                         * Retain only entries entries satisfying candidates's local predicate; excluded values do not reach the next stage.
                          *
-                         * @param {Object} item - Artwork candidate being ranked.
+                         * @param {*} entry - Value supplied by the enclosing operation; interpreted in this callback's local scope.
                          */
-                        const score = (item) =>
-                          (item.region?.toLowerCase() === game.region?.toLowerCase() ? 4 : 0) +
-                          (item.name.slice(0, -4) === parse(game.fileName).name ? 8 : 0) +
-                          (item.region === 'USA' ? 1 : 0)
-                        return score(b) - score(a) || a.name.localeCompare(b.name)
+                        (entry) => normalized(entry.title) === normalized(game.title)
+                      )
+                      candidates.sort(
+                        /**
+                         * Order candidates candidates deterministically before worker consumes the preferred result.
+                         *
+                         * @param {*} a - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                         * @param {*} b - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+                         */
+                        (a, b) => {
+                          /**
+                           * Rank exact release filenames above region matches, using USA as a deterministic preference
+                           * when otherwise tied.
+                           *
+                           * @param {Object} item - Artwork candidate being ranked.
+                           */
+                          const score = (item) =>
+                            (item.region?.toLowerCase() === game.region?.toLowerCase() ? 4 : 0) +
+                            (item.name.slice(0, -4) === parse(game.fileName).name ? 8 : 0) +
+                            (item.region === 'USA' ? 1 : 0)
+                          return score(b) - score(a) || a.name.localeCompare(b.name)
+                        }
+                      )
+                      if (!candidates.length) {
+                        artworkCheckedAt[kind] = Date.now()
+                        log(
+                          'Başarısız İndirmeler: ' +
+                            game.title +
+                            ' / ' +
+                            kind +
+                            ' (eşleşme bulunamadı)'
+                        )
+                        continue
                       }
-                    )
-                    if (!candidates.length) continue
-                    const bytes = await request(candidates[0].url, 20 * 1024 * 1024)
-                    if (removed.has(game.gameId)) break
-                    if (!bytes) continue
-                    if (!bytes.subarray(0, 8).equals(PNG)) throw new Error('Geçersiz PNG yanıtı')
-                    await fs.promises.mkdir(game.mediaDirectory, { recursive: true })
-                    const target = join(game.mediaDirectory, NAMES[kind])
-                    await fs.promises.writeFile(`${target}.tmp`, bytes)
-                    await fs.promises.rename(`${target}.tmp`, target)
+                      const report = (value) =>
+                        onDownload({
+                          id: 'thumbnail:' + game.gameId + ':' + kind,
+                          name: game.title,
+                          kind,
+                          ...value
+                        })
+                      report({ status: 'active', phase: 'downloading', percent: null })
+                      const bytes = await request(
+                        candidates[0].url,
+                        20 * 1024 * 1024,
+                        kind,
+                        (value) => report({ status: 'active', ...value })
+                      )
+                      if (removed.has(game.gameId)) break
+                      if (!allowed(kind) || !bytes) {
+                        report({ status: 'unavailable' })
+                        continue
+                      }
+                      if (!bytes.subarray(0, 8).equals(PNG)) throw new Error('Geçersiz PNG yanıtı')
+                      await fs.promises.mkdir(game.mediaDirectory, { recursive: true })
+                      const target = join(game.mediaDirectory, NAMES[kind])
+                      await fs.promises.writeFile(`${target}.tmp`, bytes)
+                      await fs.promises.rename(`${target}.tmp`, target)
+                      report({ status: 'completed' })
+                      artworkCheckedAt[kind] = Date.now()
+                      log('Başarılı İndirmeler: ' + game.title + ' / ' + kind + ' → ' + target)
+                    } catch (error) {
+                      onDownload({
+                        id: 'thumbnail:' + game.gameId + ':' + kind,
+                        name: game.title,
+                        kind,
+                        status: 'failed',
+                        error: error.message
+                      })
+                      artworkFailed = true
+                      log(
+                        'Başarısız İndirmeler: ' + game.title + ' / ' + kind + ': ' + error.message
+                      )
+                      if (allowed(kind))
+                        warning =
+                          'Medya indirilemedi; yerel önbellek kullanılıyor. ' + error.message
+                    }
                   }
                 }
-                if (!offline) checkedAt = Date.now()
+                if (!offline && !artworkFailed) checkedAt = Date.now()
               } catch (error) {
                 offline = true
-                warning = `Medya indirilemedi; yerel önbellek kullanılıyor. ${error.message}`
+                log('Başarısız İndirmeler: ' + game.title + ' / CDN: ' + error.message)
+                if (allowed('boxart') || allowed('snap'))
+                  warning = `Medya indirilemedi; yerel önbellek kullanılıyor. ${error.message}`
               }
             }
             game = enrich(game)
             if (removed.has(game.gameId)) continue
-            nextRecords[game.gameId] = recordFor(game, { checkedAt })
+            nextRecords[game.gameId] = recordFor(game, { ...previous, checkedAt, artworkCheckedAt })
             output[index] = game
             onProgress({ completed: ++completed, total: games.length, game, warning })
           }
@@ -557,6 +840,7 @@ export function createScraper({
               if (!game || removed.has(game.gameId)) continue
               nextRecords[game.gameId].archiveCheckedAt =
                 records[game.gameId]?.archiveCheckedAt || {}
+              nextRecords[game.gameId].coverTitleId = records[game.gameId]?.coverTitleId || null
               nextRecords[game.gameId].media = enrich(game).media
             }
             records = Object.fromEntries(
@@ -614,5 +898,23 @@ export function createScraper({
       }
     )
   }
-  return { enrich, scan, forget, whenMediaIdle: () => mediaQueue }
+  /** Manual retries await previews too; a pending automatic job cannot swallow the request. */
+  const rescrape = async (games, gameId, onProgress) => {
+    const original = games.find((game) => gameMediaId(game) === gameId)
+    if (!original) throw Error('Game is not in the library.')
+    log('Yeniden arama kuyruğa alındı: ' + enrich(original).title)
+    const result = await scan(games, onProgress, { force: true, gameId })
+    await mediaTasks.get(gameId)
+    const game = activeGames.get(gameId)
+    if (!game || removed.has(gameId)) throw Error('Game is no longer in the library.')
+    return { game: enrich(game), warning: result.warning }
+  }
+  return {
+    enrich,
+    scan,
+    rescrape,
+    forget,
+    cancelDisabledRequests,
+    whenMediaIdle: () => Promise.all([mediaQueue, ...mediaTasks.values()])
+  }
 }

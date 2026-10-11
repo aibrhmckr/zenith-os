@@ -17,12 +17,19 @@ const DAY = 86400000
 /**
  * Only these media kinds and fixed local filenames can be downloaded.
  */
-const TARGETS = { music: 'theme.mp3', video: 'preview.mp4' }
+const TARGETS = {
+  music: 'theme.mp3',
+  video: 'preview.mp4',
+  logo: 'logo.png',
+  boxart: 'cover-hd.png',
+  fanart: 'fanart.png'
+}
 /**
  * Platform aliases used to find matching Video Snaps packs; these are provider labels, not core
  * names.
  */
 const SYSTEMS = {
+  PS3: ['Sony Playstation 3', 'PlayStation 3', 'PS3'],
   PS2: ['Sony Playstation 2'],
   PS1: ['Sony Playstation'],
   PSP: ['Sony PSP', 'Sony Playstation Portable'],
@@ -43,7 +50,10 @@ const SYSTEMS = {
  *
  * @param {string} file - Local file path, except ranking callbacks where it is an Archive file metadata entry.
  */
-const exists = (file) => fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true
+const exists = (file) => {
+  const stat = fs.statSync(file, { throwIfNoEntry: false })
+  return stat?.isFile() === true && stat.size > 0
+}
 /**
  * Normalize accents and punctuation for exact game/platform title matching.
  *
@@ -117,6 +127,8 @@ function allowed(url, binary) {
       url.origin === ARCHIVE &&
       (url.pathname === '/advancedsearch.php' || url.pathname.startsWith('/metadata/'))
     )
+  if (url.hostname === 'art.gametdb.com')
+    return /^\/ps3\/cover\/(US|EN|JA)\/[A-Z]{4}[0-9]{5}\.jpg$/.test(url.pathname) && !url.search
   return (
     (url.hostname === 'archive.org' || url.hostname.endsWith('.archive.org')) &&
     (url.pathname.startsWith('/download/') || /^\/\d+\/items\//.test(url.pathname))
@@ -134,7 +146,7 @@ function allowed(url, binary) {
  * @param {number} options2.timeoutMs - Single request deadline in milliseconds.
  * @param {Function} onChunk - Optional async chunk consumer; supplied for streaming binary data instead of returning JSON.
  */
-async function request(url, { fetchImpl, timeoutMs }, onChunk) {
+async function request(url, { fetchImpl, timeoutMs, limit = LIMIT }, onChunk) {
   const controller = new AbortController()
   const timer = setTimeout(
     /**
@@ -155,7 +167,7 @@ async function request(url, { fetchImpl, timeoutMs }, onChunk) {
       if (redirects === 4 || !response.headers.get('location')) throw Error('Redirect limit')
       current = new URL(response.headers.get('location'), current)
     }
-    if (!response.ok || !response.body || Number(response.headers.get('content-length')) > LIMIT) {
+    if (!response.ok || !response.body || Number(response.headers.get('content-length')) > limit) {
       await response.body?.cancel()
       throw Error('Unavailable or oversized archive response')
     }
@@ -166,8 +178,8 @@ async function request(url, { fetchImpl, timeoutMs }, onChunk) {
       const { done, value } = await reader.read()
       if (done) break
       size += value.length
-      if (size > LIMIT) throw Error('Archive size limit')
-      if (onChunk) await onChunk(value)
+      if (size > limit) throw Error('Archive size limit')
+      if (onChunk) await onChunk(value, Number(response.headers.get('content-length')) || null)
       else chunks.push(Buffer.from(value))
     }
     if (!size) throw Error('Empty archive response')
@@ -184,6 +196,28 @@ async function request(url, { fetchImpl, timeoutMs }, onChunk) {
   }
 }
 
+/** Validate a JPEG SOF frame before publishing a GameTDB cover; reject HTML and giant images. */
+function validJpegCover(bytes) {
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return false
+  let offset = 2
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset++] !== 0xff) return false
+    while (bytes[offset] === 0xff) offset++
+    const marker = bytes[offset++]
+    if (marker === 0xda || marker === 0xd9) return false
+    const length = bytes.readUInt16BE(offset)
+    if (length < 2 || offset + length > bytes.length) return false
+    if ([0xc0, 0xc1, 0xc2].includes(marker)) {
+      if (length < 8) return false
+      const height = bytes.readUInt16BE(offset + 3),
+        width = bytes.readUInt16BE(offset + 5)
+      return width >= 128 && height > width && height <= 16384 && width <= 16384
+    }
+    offset += length
+  }
+  return false
+}
+
 /**
  * Stream an MP3/MP4 to a temporary cache file, validate its signature, and rename only on
  * success. Missing content or I/O failure returns null and removes partial data.
@@ -195,28 +229,42 @@ async function request(url, { fetchImpl, timeoutMs }, onChunk) {
  * @param {Object} options - Operation configuration; see destructured properties and defaults below.
  */
 async function download(identifier, entry, kind, directory, options) {
-  const target = join(directory, TARGETS[kind])
+  const target = join(directory, options.coverUrl ? 'cover-gametdb.jpg' : TARGETS[kind])
   const temporary = `${target}.part`
+  const report = (value) =>
+    options.onDownload?.({
+      id: 'media:' + options.gameId + ':' + kind,
+      name: options.gameTitle,
+      kind,
+      ...value
+    })
   let file
   try {
-    if (exists(target)) return target
+    if (!options.force && exists(target)) return target
+    report({
+      status: 'active',
+      phase: 'downloading',
+      received: 0,
+      total: Number(entry.size) || null
+    })
     await fs.promises.mkdir(directory, { recursive: true })
     file = await fs.promises.open(temporary, 'w')
     let prefix = Buffer.alloc(0)
     let size = 0
     const filePath = entry.name.split('/').map(encodeURIComponent).join('/')
     await request(
-      `${ARCHIVE}/download/${encodeURIComponent(identifier)}/${filePath}`,
+      options.coverUrl || `${ARCHIVE}/download/${encodeURIComponent(identifier)}/${filePath}`,
       options,
       /**
        * Complete the request callback step owned by download; caller arguments and captured state determine this stage's result.
        *
        * @param {*} chunk - Response bytes delivered by the stream.
        */
-      async (chunk) => {
+      async (chunk, total) => {
         size += chunk.length
-        if (prefix.length < 64)
-          prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 64 - prefix.length)])
+        report({ status: 'active', received: size, total: total || Number(entry.size) || null })
+        if (prefix.length < 65536)
+          prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 65536 - prefix.length)])
         let offset = 0
         while (offset < chunk.length) {
           const { bytesWritten } = await file.write(chunk, offset, chunk.length - offset)
@@ -225,19 +273,39 @@ async function download(identifier, entry, kind, directory, options) {
         }
       }
     )
-    const valid =
-      kind === 'music'
+    const valid = options.coverUrl
+      ? validJpegCover(prefix)
+      : kind === 'music'
         ? prefix.subarray(0, 3).toString() === 'ID3' ||
           (prefix[0] === 0xff && (prefix[1] & 0xe0) === 0xe0 && (prefix[1] & 0x06) !== 0)
-        : prefix.subarray(4, 8).toString() === 'ftyp' &&
-          prefix.readUInt32BE(0) >= 16 &&
-          prefix.readUInt32BE(0) <= size
+        : ['logo', 'boxart', 'fanart'].includes(kind)
+          ? prefix.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+          : prefix.subarray(4, 8).toString() === 'ftyp' &&
+            prefix.readUInt32BE(0) >= 16 &&
+            prefix.readUInt32BE(0) <= size
+    if (!options.coverUrl && (kind === 'boxart' || kind === 'fanart')) {
+      const width = prefix.length >= 24 ? prefix.readUInt32BE(16) : 0
+      const height = prefix.length >= 24 ? prefix.readUInt32BE(20) : 0
+      if (
+        prefix.toString('ascii', 12, 16) !== 'IHDR' ||
+        width > 16384 ||
+        height > 16384 ||
+        (kind === 'boxart'
+          ? width < 600 || height <= width
+          : width < 1920 || height < 1080 || width <= height)
+      )
+        throw Error('Not high-resolution artwork')
+    }
     if (size < 16 || !valid) throw Error('Invalid media response')
     await file.close()
     file = null
     await fs.promises.rename(temporary, target)
+    report({ status: 'completed', phase: 'ready' })
+    options.onDiagnostic?.('Başarılı İndirmeler: ' + kind + ' → ' + target)
     return target
-  } catch {
+  } catch (error) {
+    report({ status: 'failed', error: error.message })
+    options.onDiagnostic?.('Başarısız İndirmeler: ' + kind + ' — ' + error.message)
     return null
   } finally {
     await file?.close().catch(
@@ -298,14 +366,35 @@ function candidates(metadata, game, kind, pack) {
           )
         )
           return false
-        if (!file.name.toLowerCase().endsWith(kind === 'music' ? '.mp3' : '.mp4')) return false
-        if (Number(file.size) > LIMIT || Number(file.size) < 0) return false
+        if (
+          !file.name
+            .toLowerCase()
+            .endsWith(
+              kind === 'music'
+                ? '.mp3'
+                : ['logo', 'boxart', 'fanart'].includes(kind)
+                  ? '.png'
+                  : '.mp4'
+            )
+        )
+          return false
+        if (
+          Number(file.size) > (['boxart', 'fanart'].includes(kind) ? 20 * 1024 * 1024 : LIMIT) ||
+          Number(file.size) < 0
+        )
+          return false
         if (kind === 'video') {
           if (duration(file.length) > 60) return false
           const title = stripTags(
             posix.basename(file.original || file.name).replace(/(?:\.ia)?\.mp4$/i, '')
           )
-          if (pack && normalized(title) !== normalized(game.title)) return false
+          if (
+            pack &&
+            normalized(title.replace(/(?:\s*[-_]\s*)?(?:video snap|preview|snap)$/i, '')) !==
+              normalized(game.title) &&
+            normalized(title) !== normalized(game.titleId || '\0')
+          )
+            return false
         }
         return true
       }
@@ -324,6 +413,8 @@ function candidates(metadata, game, kind, pack) {
          * @param {string} file - Local file path, except ranking callbacks where it is an Archive file metadata entry.
          */
         const score = (file) => {
+          if (kind === 'boxart' || kind === 'fanart')
+            return (Number(file.width) || 0) * (Number(file.height) || 0)
           const seconds = duration(file.length)
           return (
             (kind === 'music' && /title|theme|menu/i.test(`${file.title || ''} ${file.name}`)
@@ -353,7 +444,9 @@ function matchesTitle(title, game, kind) {
   const cleaned = stripTags(title).replace(
     kind === 'music'
       ? /\s*[-:]?\s*(?:(?:original|official|video game|game)\s+)*(?:soundtrack|ost|theme)(?:\s+music)?\s*$/i
-      : /\s*[-:]?\s*(?:video\s+snap|snap|preview|gameplay)(?:\s+video)?\s*$/i,
+      : kind === 'logo'
+        ? /\s*[-:]?\s*(?:clear\s*logo|logo)\s*$/i
+        : /\s*[-:]?\s*(?:video\s+snap|snap|preview|gameplay)(?:\s+video)?\s*$/i,
     ''
   )
   return normalized(cleaned) === normalized(game.title)
@@ -372,13 +465,15 @@ function matchesTitle(title, game, kind) {
 export function createMediaDownloader({
   userData,
   fetchImpl = globalThis.fetch,
+  onDownload = () => {},
+  onDiagnostic = () => {},
   timeoutMs = 15000
 } = {}) {
   mediaRoot(userData)
   /**
    * Injected fetch and one per-request timeout, shared across search, metadata, and streaming.
    */
-  const options = { fetchImpl, timeoutMs }
+  const options = { fetchImpl, timeoutMs, onDiagnostic, onDownload }
   /**
    * Shared discovery promises with expiry; rejected requests are evicted for retry.
    */
@@ -438,10 +533,72 @@ export function createMediaDownloader({
    * @param {string} kind - Media category or modal type selecting this operation's behavior.
    * @param {string} directory - Validated local destination or directory to inspect.
    */
-  async function find(game, kind, directory) {
+  async function find(game, kind, directory, force) {
+    if (
+      game.systemShort === 'PS3' &&
+      kind === 'boxart' &&
+      /^[A-Z]{4}[0-9]{5}$/.test(game.titleId || '')
+    ) {
+      for (const region of ['US', 'EN', 'JA']) {
+        const target = await download(
+          '',
+          {
+            name: game.titleId + '.jpg'
+          },
+          kind,
+          directory,
+          {
+            ...options,
+            gameId: game.gameId,
+            gameTitle: game.title,
+            force,
+            limit: 20 * 1024 * 1024,
+            coverUrl: 'https://art.gametdb.com/ps3/cover/' + region + '/' + game.titleId + '.jpg'
+          }
+        )
+        if (target) return target
+      }
+    }
+    // Probe named PS3 packs directly before discovery, since their titles are not consistent.
+    if (kind === 'video' && game.systemShort === 'PS3') {
+      const direct = await tryItems(
+        [
+          { identifier: 'sony-playstation-3-video-snaps' },
+          { identifier: 'SonyPlaystation3VideoSnaps' }
+        ],
+        true
+      )
+      if (direct) return direct
+    }
     let docs
     let pack = false
-    if (kind === 'music') {
+    if (kind === 'boxart' || kind === 'fanart') {
+      const terms =
+        kind === 'boxart'
+          ? 'title:boxart OR title:cover'
+          : 'title:fanart OR title:background OR title:wallpaper'
+      docs = await search(
+        'mediatype:image AND title:(' +
+          quoted(game.title) +
+          ') AND (' +
+          terms +
+          ') AND (subject:("PlayStation 3") OR subject:PS3)'
+      )
+      docs = docs.filter(
+        (doc) =>
+          normalized(
+            stripTags(doc.title || '').replace(
+              /\s*[-:]?\s*(boxart|cover|fanart|background|wallpaper)\s*$/i,
+              ''
+            )
+          ) === normalized(game.title)
+      )
+    } else if (kind === 'logo') {
+      docs = await search(
+        `mediatype:image AND title:(${quoted(game.title)}) AND (title:logo OR title:clearlogo) AND (subject:("PlayStation 3") OR subject:PS3)`
+      )
+      docs = docs.filter((doc) => matchesTitle(doc.title || '', game, kind))
+    } else if (kind === 'music') {
       docs = await search(`collection:(vgm_ost) AND title:(${quoted(game.title)})`)
       if (!docs.length) docs = await search(`mediatype:audio AND title:(${quoted(game.title)})`)
       docs = docs.filter(
@@ -472,8 +629,12 @@ export function createMediaDownloader({
              * @param {*} system - Value supplied by the enclosing operation; interpreted in this callback's local scope.
              */
             (system) =>
-              normalized(stripTags(doc.title || '').replace(/\(?video snaps\)?/gi, '')) ===
-              normalized(system)
+              normalized(
+                stripTags(doc.title || '').replace(
+                  /video[ _-]*snaps?|gameplay|previews?|HQ|HD|1080p|4k/gi,
+                  ''
+                )
+              ) === normalized(system)
           )
       )
       pack = true
@@ -490,7 +651,13 @@ export function createMediaDownloader({
         try {
           const metadata = await json(`${ARCHIVE}/metadata/${encodeURIComponent(doc.identifier)}`)
           for (const entry of candidates(metadata, game, kind, isPack).slice(0, 3)) {
-            const target = await download(doc.identifier, entry, kind, directory, options)
+            const target = await download(doc.identifier, entry, kind, directory, {
+              ...options,
+              gameId: game.gameId,
+              gameTitle: game.title,
+              force,
+              limit: ['boxart', 'fanart'].includes(kind) ? 20 * 1024 * 1024 : LIMIT
+            })
             if (target) return target
           }
         } catch {
@@ -500,7 +667,7 @@ export function createMediaDownloader({
       return null
     }
     const target = await tryItems(docs, pack)
-    if (target || kind === 'music') return target
+    if (target || kind !== 'video') return target
     const individual = await search(
       `mediatype:movies AND title:(${quoted(game.title)}) AND (title:preview OR title:snap OR title:gameplay)`
     )
@@ -529,6 +696,7 @@ export function createMediaDownloader({
     game,
     {
       kinds = ['music', 'video'],
+      force = false,
       onResult /**
        * Optional notification defaults to a no-op so callers can omit a progress callback.
        */ = () => {}
@@ -547,10 +715,16 @@ export function createMediaDownloader({
          */
         async (kind) => {
           if (!Object.hasOwn(TARGETS, kind)) return
+          result[kind] = null
           try {
             const directory = gameMediaDirectory(userData, game.gameId)
-            const cached = join(directory, TARGETS[kind])
-            result[kind] = exists(cached) ? cached : await find(game, kind, directory)
+            const gameTdb = join(directory, 'cover-gametdb.jpg')
+            const cached =
+              kind === 'boxart' && exists(gameTdb) ? gameTdb : join(directory, TARGETS[kind])
+            result[kind] =
+              !force && exists(cached)
+                ? cached
+                : (await find(game, kind, directory, force)) || (exists(cached) ? cached : null)
           } catch {
             /* Music and video fail independently, leaving null and no UI error. */
           }

@@ -1,6 +1,7 @@
 /* eslint-disable react/prop-types -- Shared internal input hint components. */
 import { useContext } from 'react'
 import { InputContext } from '../hooks/inputContext'
+import GamepadBadge from './GamepadBadge'
 
 /**
  * Render a keyboard label or Xbox-style colored badge according to InputContext, keeping help
@@ -12,13 +13,10 @@ import { InputContext } from '../hooks/inputContext'
  */
 export function KeyBadge({ keyboard, gamepad }) {
   const mode = useContext(InputContext)
-  const label = mode === 'gamepad' ? gamepad : keyboard
+  if (mode === 'gamepad') return <GamepadBadge button={gamepad} />
   return (
-    <kbd
-      data-input-mode={mode}
-      className={`input-badge ${mode === 'gamepad' ? `pad-badge pad-${gamepad}` : 'keyboard-badge'}`}
-    >
-      {label}
+    <kbd data-input-mode={mode} className="input-badge keyboard-badge">
+      {keyboard}
     </kbd>
   )
 }

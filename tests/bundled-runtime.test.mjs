@@ -8,7 +8,7 @@ import { seedBundledRetroArch } from '../src/main/services/bundledRuntime.js'
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'zenith-locked-runtime-'))
-  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }))
   const source = path.join(root, 'resources', 'emulators', 'retroarch')
   const destination = path.join(root, 'profile', 'emulators', 'retroarch')
   await fs.mkdir(path.join(source, 'autoconfig'), { recursive: true })

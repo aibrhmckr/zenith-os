@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { cleanGameName, createScraper, gameMediaId } from '../src/main/services/scraper.js'
-import { mediaUrl, serveMedia } from '../src/main/services/local-media.js'
+import { mediaUrl, serveMedia, gameLogoUrl } from '../src/main/services/local-media.js'
 import { createMediaDownloader } from '../src/main/services/mediaScraper.js'
 
 const png = Buffer.from(
@@ -19,6 +19,93 @@ const game = (fileName = 'Call of Duty 3 (USA).iso', systemShort = 'PS2') => ({
   id: fileName,
   fileName,
   systemShort
+})
+
+test('rescanning restores Spotlight metadata and resolves real local logo aliases', async (t) => {
+  const paths = fixture()
+  t.after(() => fs.rmSync(paths.projectDirectory, { recursive: true, force: true, maxRetries: 3 }))
+  const entry = game()
+  const id = gameMediaId(entry)
+  const directory = path.join(paths.userData, 'media', id)
+  fs.mkdirSync(directory, { recursive: true })
+  fs.writeFileSync(path.join(directory, 'clear.png'), png)
+  fs.writeFileSync(
+    path.join(paths.userData, 'games.json'),
+    JSON.stringify({
+      games: {
+        [id]: {
+          year: 2006,
+          genres: ['Action'],
+          overview: 'A restored summary.',
+          publisher: 'Studio',
+          logoPath: 'clear.png',
+          path: '/must/not/replace/rom.iso',
+          systemShort: 'PS3'
+        }
+      }
+    })
+  )
+  const scraper = createScraper({
+    ...paths,
+    fetchImpl: async () => assert.fail('No network for local enrichment')
+  })
+  const enriched = scraper.enrich(entry)
+  assert.equal(enriched.year, 2006)
+  assert.equal(enriched.overview, 'A restored summary.')
+  assert.equal(enriched.systemShort, 'PS2')
+  assert.equal(enriched.path, undefined)
+  const url = gameLogoUrl(enriched)
+  assert.match(url, /^game-media:\/\//)
+  assert.equal((await serveMedia(new Request(url)).arrayBuffer()).byteLength, png.length)
+  assert.equal(gameLogoUrl({ clearLogo: path.join(directory, 'clear.png') }), url)
+  assert.equal(gameLogoUrl({ logoPath: path.join(directory, 'missing.png') }), null)
+  fs.writeFileSync(path.join(directory, 'logo.png'), png)
+  assert.match(gameLogoUrl(scraper.enrich(entry)), /logo\.png$/)
+})
+
+test('normal rescans reuse complete caches without requests/jobs; repair only missing cached artwork', async (t) => {
+  const paths = fixture()
+  t.after(() => fs.rmSync(paths.projectDirectory, { recursive: true, force: true, maxRetries: 3 }))
+  const games = [game(), game('Forest (USA).iso', 'PS3')]
+  const requests = [],
+    jobs = []
+  const scraper = createScraper({
+    ...paths,
+    onDownload: (job) => jobs.push(job),
+    fetchImpl: async (url) => {
+      requests.push(url)
+      return url.endsWith('/')
+        ? new Response('<a href="Call%20of%20Duty%203%20(USA).png">art</a>')
+        : new Response(png)
+    }
+  })
+  for (const entry of games) {
+    const directory = scraper.enrich(entry).mediaDirectory
+    fs.mkdirSync(directory, { recursive: true })
+    for (const name of ['boxart.png', 'snap.png', 'theme.mp3', 'preview.mp4'])
+      fs.writeFileSync(path.join(directory, name), png)
+  }
+  await scraper.scan(games)
+  await scraper.whenMediaIdle()
+  assert.equal(requests.length, 0, 'Complete PS2 and PS3 caches must not query optional providers')
+  assert.equal(jobs.length, 0)
+  const cover = scraper.enrich(games[0]).media.boxart
+  fs.writeFileSync(cover, '')
+  await scraper.scan(games)
+  await scraper.whenMediaIdle()
+  assert.deepEqual(fs.readFileSync(cover), png)
+  assert(requests.some((url) => url.includes('Named_Boxarts')))
+  assert(!requests.some((url) => url.includes('Named_Snaps') || url.includes('archive.org')))
+  const count = requests.length
+  fs.unlinkSync(cover)
+  await scraper.scan(games)
+  await scraper.whenMediaIdle()
+  assert(requests.length > count, 'Missing formerly cached files bypass negative-result cooldown')
+  assert.deepEqual(fs.readFileSync(cover), png)
+  requests.length = 0
+  await scraper.scan(games)
+  await scraper.whenMediaIdle()
+  assert.equal(requests.length, 0)
 })
 
 test('clean title/region and stable collision-resistant IDs preserve significant punctuation', () => {
@@ -88,7 +175,7 @@ test('all three CDN categories, region matching, cache persistence, local audio/
       throw Error('Must use cached images')
     }
   })
-  assert.equal((await offline.scan([game()], undefined, { force: true })).warning, null)
+  assert.equal((await offline.scan([game()])).warning, null)
   assert.equal(offline.enrich(game()).media.boxart, enriched.media.boxart)
 })
 
@@ -624,4 +711,148 @@ test('local media protocol restricts paths and serves bounded ranges, suffixes a
   assert.equal(head.headers.get('content-length'), '10')
   assert.equal(await head.text(), '')
   assert.equal(serveMedia(new Request('game-media://local/../secret.mp4')).status, 404)
+})
+
+test('PS3 folder and installed artwork is immediate offline, falls back behind online cache and ignores invalid/linked files', async (t) => {
+  const paths = fixture()
+  t.after(() => fs.rmSync(paths.projectDirectory, { recursive: true, force: true }))
+  const { paramSfo } = await import('./fixtures/ps3-sfo.cjs')
+  const titleDir = path.join(paths.projectDirectory, 'My Game', 'PS3_GAME')
+  fs.mkdirSync(path.join(titleDir, 'USRDIR'), { recursive: true })
+  fs.writeFileSync(path.join(titleDir, 'USRDIR/EBOOT.BIN'), 'fixture')
+  fs.writeFileSync(
+    path.join(titleDir, 'PARAM.SFO'),
+    paramSfo({ TITLE: 'Blur', TITLE_ID: 'BLES12345', CATEGORY: 'DG' })
+  )
+  for (const name of ['ICON0.PNG', 'PIC1.PNG', 'PIC0.PNG'])
+    fs.writeFileSync(path.join(titleDir, name), png)
+  let calls = 0
+  const scraper = createScraper({
+    ...paths,
+    fetchImpl: async () => {
+      calls++
+      throw Error('offline')
+    }
+  })
+  const folder = {
+    ...game('EBOOT.BIN', 'PS3'),
+    path: path.join(titleDir, 'USRDIR/EBOOT.BIN'),
+    importKey: 'folder'
+  }
+  let enriched = scraper.enrich(folder)
+  assert.equal(calls, 0)
+  assert.equal(enriched.title, 'Blur', 'Search by PARAM.SFO title, not EBOOT')
+  assert.equal(enriched.media.boxart, path.join(titleDir, 'ICON0.PNG'))
+  assert.equal(enriched.media.snap, path.join(titleDir, 'PIC1.PNG'))
+  assert.equal(enriched.media.logo, path.join(titleDir, 'PIC0.PNG'))
+  fs.mkdirSync(enriched.mediaDirectory, { recursive: true })
+  for (const name of ['boxart.png', 'snap.png'])
+    fs.writeFileSync(path.join(enriched.mediaDirectory, name), png)
+  enriched = scraper.enrich(folder)
+  assert.equal(enriched.media.snap, path.join(enriched.mediaDirectory, 'snap.png'))
+  const scanned = await scraper.scan([folder])
+  await scraper.whenMediaIdle()
+  assert.equal(scanned.games[0].media.boxart, path.join(enriched.mediaDirectory, 'boxart.png'))
+  assert.equal(
+    manifest(paths)[enriched.gameId].media.snap,
+    path.join(enriched.mediaDirectory, 'snap.png')
+  )
+  assert.equal((await serveMedia(new Request(mediaUrl(enriched.media.snap)))).status, 200)
+  fs.writeFileSync(path.join(titleDir, 'PIC1.PNG'), '<html>bad png</html>')
+  fs.unlinkSync(path.join(titleDir, 'PIC0.PNG'))
+  fs.symlinkSync(path.join(titleDir, 'ICON0.PNG'), path.join(titleDir, 'PIC0.PNG'))
+  const fallback = scraper.enrich(folder)
+  assert.equal(fallback.media.snap, path.join(enriched.mediaDirectory, 'snap.png'))
+  assert.equal(fallback.media.logo, null)
+  assert.equal(scraper.enrich({ ...folder, systemShort: 'PS2' }).media.boxart, null)
+})
+
+test('PS3 CDN artwork and Archive PS3 videos/logos update the manifest and notify without blocking', async (t) => {
+  const paths = fixture()
+  t.after(() => fs.rmSync(paths.projectDirectory, { recursive: true, force: true }))
+  const calls = [],
+    updates = [],
+    gate = deferred()
+  const fetchImpl = async (url) => {
+    calls.push(url)
+    const u = new URL(url)
+    if (u.hostname === 'thumbnails.libretro.com') {
+      assert(u.pathname.startsWith('/Sony%20-%20PlayStation%203/'))
+      return new Response(url.endsWith('/') ? '<a href="Blur%20(USA).png">Blur</a>' : png)
+    }
+    if (u.pathname === '/advancedsearch.php') {
+      const q = u.searchParams.get('q')
+      const docs = q.includes('video snaps')
+        ? [{ identifier: 'ps3-snaps', title: 'PS3 (Video Snaps)' }]
+        : q.includes('mediatype:image')
+          ? [{ identifier: 'blur-logo', title: 'Blur Logo' }]
+          : []
+      return Response.json({ response: { docs } })
+    }
+    if (u.pathname === '/metadata/ps3-snaps')
+      return Response.json({
+        files: [
+          { name: 'Blur 2.mp4', size: mp4.length, length: 30 },
+          { name: 'Blur (USA).mp4', size: mp4.length, length: 30 }
+        ]
+      })
+    if (u.pathname === '/metadata/blur-logo')
+      return Response.json({ files: [{ name: 'logo.png', size: png.length }] })
+    if (u.pathname.startsWith('/download/ps3-snaps/')) {
+      await gate.promise
+      return new Response(mp4)
+    }
+    if (u.pathname === '/download/blur-logo/logo.png') return new Response(png)
+    throw Error('Unexpected request ' + url)
+  }
+  const scraper = createScraper({
+    ...paths,
+    fetchImpl,
+    onMediaUpdated: (game) => updates.push(game)
+  })
+  const ps3 = game('Blur (USA).iso', 'PS3')
+  const scanned = await scraper.scan([ps3])
+  assert.equal(scanned.games[0].media.video, null, 'Artwork scan does not await preview')
+  for (const kind of ['boxart', 'snap', 'titleScreen'])
+    assert.deepEqual(fs.readFileSync(scanned.games[0].media[kind]), png)
+  gate.resolve()
+  await scraper.whenMediaIdle()
+  const enriched = scraper.enrich(ps3)
+  assert.equal(enriched.media.video, path.join(enriched.mediaDirectory, 'preview.mp4'))
+  assert.deepEqual(fs.readFileSync(enriched.media.video), mp4)
+  assert.deepEqual(fs.readFileSync(enriched.media.logo), png)
+  assert.equal(manifest(paths)[enriched.gameId].media.video, enriched.media.video)
+  assert(updates.some((entry) => entry.media.video === enriched.media.video))
+  assert(calls.some((url) => new URL(url).searchParams.get('q')?.includes('"PlayStation 3"')))
+  const count = calls.length
+  await scraper.scan([ps3])
+  await scraper.whenMediaIdle()
+  assert.equal(calls.length, count, 'Persistent files and cooldowns avoid repeat downloads')
+})
+
+test('targeted force retry searches only the selected game and preserves the full manifest', async (t) => {
+  const paths = fixture()
+  t.after(() => fs.rmSync(paths.projectDirectory, { recursive: true, force: true }))
+  const calls = []
+  const scraper = createScraper({
+    ...paths,
+    fetchImpl: async (url) => {
+      calls.push(url)
+      return new Response('', { status: 404 })
+    }
+  })
+  const games = [game('Blur.iso', 'PS3'), game('Other.iso', 'PS2')]
+  await scraper.scan(games)
+  await scraper.whenMediaIdle()
+  calls.length = 0
+  await scraper.scan(games, undefined, { force: true, gameId: gameMediaId(games[0]) })
+  await scraper.whenMediaIdle()
+  assert(calls.some((url) => url.includes('PlayStation%203')))
+  assert(
+    !calls.some(
+      (url) =>
+        url.includes('PlayStation%202') || new URL(url).searchParams.get('q')?.includes('Other')
+    )
+  )
+  assert.equal(Object.keys(manifest(paths)).length, 2)
 })

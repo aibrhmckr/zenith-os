@@ -135,8 +135,13 @@ test(
     })
     const rename = fs.promises.rename
     t.mock.method(fs.promises, 'rename', async (from, to) => {
-      assert.equal(from, markedFile)
-      assert(!fs.existsSync(`${from}:Zone.Identifier`), 'Stream removed before atomic publication')
+      if (to === destination) {
+        assert.equal(from, markedFile)
+        assert(
+          !fs.existsSync(`${from}:Zone.Identifier`),
+          'Stream removed before atomic publication'
+        )
+      }
       return rename(from, to)
     })
     assert.equal((await manager.install('N64')).success, true)

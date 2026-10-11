@@ -6,11 +6,13 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "scripts": {
+    "test:wallpapers": "node --test tests/wallpapers.test.mjs && npm run build && electron tests/wallpapers.cjs",
     "setup:emulators": "node scripts/setup-emulators.mjs",
     "format": "prettier --write .",
     "lint": "eslint --cache .",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
+    "test:dev-renderer": "electron-vite dev --entry tests/dev-renderer.cjs",
     "build": "electron-vite build",
     "test:local-games": "npm run build && electron tests/local-games.cjs && electron tests/local-games.cjs --psp-path",
     "test:launcher": "npm run build && electron tests/launcher.cjs",
@@ -36,14 +38,18 @@
     "test:core-browser": "npm run build && electron tests/core-browser.cjs",
     "test:core-download": "npm run build && electron tests/core-download.cjs",
     "test:runtime-startup": "npm run build && electron tests/runtime-startup.cjs && electron tests/runtime-startup.cjs --critical",
-    "test:rpcs3": "node --test tests/rpcs3.test.mjs tests/rpcs3-install.test.mjs tests/rpcs3-library.test.mjs && npm run build && electron tests/rpcs3-launcher.cjs"
+    "test:rpcs3": "node --test tests/rpcs3.test.mjs tests/rpcs3-install.test.mjs tests/rpcs3-library.test.mjs && npm run build && electron tests/rpcs3-launcher.cjs",
+    "test:media-settings": "npm run build && electron tests/media-settings.cjs",
+    "test:file-browser": "node --test tests/file-browser.test.mjs && npm run build && electron tests/file-browser.cjs"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@rollup/rollup-win32-x64-msvc": "^4.63.5",
-    "js-yaml": "^4.3.2",
-    "7zip-bin": "^5.2.0"
+    "7zip-bin": "^5.2.0",
+    "7zip-bin-full": "26.3.1",
+    "electron-updater": "^6.8.9",
+    "js-yaml": "^4.3.2"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config": "^2.1.0",

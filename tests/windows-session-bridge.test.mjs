@@ -44,8 +44,14 @@ test(
   }
 )
 
-function simulate({ buttons, foreground, commands = {}, succeeds = true }) {
-  const config = JSON.stringify({ pad: [8, 9], keys: [], zenithWindow: '12345', zenithPid: 9090 })
+function simulate({ buttons, foreground, commands = {}, succeeds = true, ready = null }) {
+  const config = JSON.stringify({
+    pad: [8, 9],
+    keys: [],
+    zenithWindow: '12345',
+    zenithPid: 9090,
+    watchReady: Boolean(ready)
+  })
   const input = buttons.map((_, i) => commands[i] ?? (i === 0 ? config : null))
   const mock = `
 using System;
@@ -60,10 +66,14 @@ public static class ZenithPad {
   public static int Read(int slot) { return slot == 0 ? Buttons[Frame] : 0; }
   public static int GetAsyncKeyState(int key) { return 0; }
   public static bool IsForeground(int pid) { return Foreground[Frame]; }
+  public static void HoldMask(long hwnd, int pid) { Console.WriteLine("mask:" + Frame); }
+  public static bool RenderReady(int pid) { return new bool[] { ${(ready || buttons.map(() => false)).join(',')} }[Frame]; }
   public static bool ShowWindow(IntPtr h, int n) { return true; }
   public static bool SetForegroundWindow(IntPtr h) { Console.WriteLine("resume-focus"); return true; }
   public static bool FocusZenith(long hwnd, int pid) { Console.WriteLine("focus:" + hwnd + ":" + pid); return ${succeeds}; }
 }
+
+
 `
   const script = source
     .replace('param([int]$EmulatorPid)', '$EmulatorPid = 7007')
@@ -112,4 +122,19 @@ test('native foreground retries are bounded when Windows rejects activation', wi
   })
   assert.equal(output.filter((v) => v === 'home').length, 1)
   assert.equal(output.filter((v) => v === 'focus:12345:9090').length, 3)
+})
+
+test('loading mask stays topmost until three consecutive positive render samples', windows, () => {
+  const output = simulate({
+    buttons: Array(18).fill(0),
+    foreground: Array(18).fill(true),
+    // Checks run at 0, 3, 6, 9, 12, 15. A transient positive sample is insufficient.
+    ready: Array.from({ length: 18 }, (_, i) => i === 3 || i >= 9)
+  })
+  assert.deepEqual(
+    output.filter((v) => v.startsWith('mask:')),
+    ['mask:0', 'mask:3', 'mask:6', 'mask:9', 'mask:12', 'mask:15']
+  )
+  assert.equal(output.filter((v) => v === 'ready').length, 1)
+  assert(output.indexOf('ready') > output.indexOf('mask:15'))
 })

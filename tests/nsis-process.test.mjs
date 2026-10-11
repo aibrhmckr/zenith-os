@@ -62,17 +62,24 @@ test('NSIS retries are bounded; real exit failures and unrelated tools are not r
   await assert.rejects(fail('setup.exe', [], options), (e) => e === error)
 })
 
-test('Windows default is assisted NSIS with directory selection and no differential payload', async () => {
+test('Windows default is assisted NSIS with directory selection and differential update payload', async () => {
   const config = yaml.load(
     await readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8')
   )
   assert.equal(config.win.target, 'nsis')
-  assert.equal(config.win.signAndEditExecutable, false)
+  assert.equal(config.win.signAndEditExecutable, true)
+  assert.equal(config.win.icon, 'build/icon.ico')
+  assert.deepEqual(config.publish, {
+    provider: 'github',
+    owner: 'aibrhmckr',
+    repo: 'zenith-os',
+    releaseType: 'release'
+  })
   assert.equal(config.win.forceCodeSigning, false)
   assert.equal(config.nsis.oneClick, false)
   assert.equal(config.nsis.perMachine, false)
   assert.equal(config.nsis.allowToChangeInstallationDirectory, true)
-  assert.equal(config.nsis.differentialPackage, false)
+  assert.equal(config.nsis.differentialPackage, true)
   for (const key of ['createDesktopShortcut', 'createStartMenuShortcut', 'runAfterFinish'])
     assert.equal(config.nsis[key], true)
 })

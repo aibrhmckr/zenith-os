@@ -10,6 +10,10 @@ const { load } = require('js-yaml')
 const { discImage } = require('./fixtures/disc-image.cjs')
 const { coreBinary } = require('./fixtures/core-archive.cjs')
 const { paramSfo } = require('./fixtures/ps3-sfo.cjs')
+const art = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII=',
+  'base64'
+)
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-rpcs3-ipc-'))
 const profile = path.join(root, 'profile'),
   runtime = path.join(profile, 'emulators/rpcs3')
@@ -20,6 +24,8 @@ fs.writeFileSync(game, discImage('PS3'))
 const pkg = path.join(root, 'games', 'Package.pkg')
 fs.writeFileSync(pkg, 'synthetic package')
 app.getAppPath = () => root
+const originalGetPath = app.getPath.bind(app)
+app.getPath = (name) => (name === 'home' ? root : originalGetPath(name))
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('force-prefers-reduced-motion')
@@ -52,12 +58,15 @@ shell.openPath = async (dir) => {
   return ''
 }
 let requests = 0
+const mediaRequests = []
 let picked = null
 let installFails = false
 let installExitCode = 0
-dialog.showOpenDialog = async () =>
-  picked ? { filePaths: [picked] } : { canceled: true, filePaths: [] }
-globalThis.fetch = async () => {
+dialog.showOpenDialog = async () => {
+  throw Error('PS3 content must use the in-app browser')
+}
+globalThis.fetch = async (url) => {
+  mediaRequests.push(url)
   requests++
   return new Response('', { status: 404 })
 }
@@ -88,6 +97,8 @@ cp.spawn = (command, args, options) => {
         const titleDir = path.join(runtime, 'portable/dev_hdd0/game/NPUB12345')
         fs.mkdirSync(path.join(titleDir, 'USRDIR'), { recursive: true })
         fs.writeFileSync(path.join(titleDir, 'USRDIR/EBOOT.BIN'), 'synthetic boot')
+        fs.writeFileSync(path.join(titleDir, 'ICON0.PNG'), art)
+        fs.writeFileSync(path.join(titleDir, 'PIC1.PNG'), art)
         fs.writeFileSync(
           path.join(titleDir, 'PARAM.SFO'),
           paramSfo({ TITLE_ID: 'NPUB12345', TITLE: 'Installed Test Game', CATEGORY: 'HG' })
@@ -231,13 +242,32 @@ async function run(win) {
   await click('[data-rpcs3-refresh]')
   await wait("!document.querySelector('[data-rpcs3-firmware]').disabled")
   await click('[data-rpcs3-firmware]')
+  await wait("!!document.querySelector('[data-file-browser]')")
+  await click('[data-console-modal=fileBrowser] [data-modal-close]')
   await wait("!document.querySelector('[data-rpcs3-firmware]').disabled")
   assert.equal(spawns.length, 0, 'Canceled picker never spawns')
+  assert.equal(
+    await ev("document.activeElement?.hasAttribute('data-rpcs3-firmware')"),
+    true,
+    'Picker cancellation restores its launch button'
+  )
   picked = path.join(root, 'PS3UPDAT.PUP')
   const pup = Buffer.alloc(128)
   pup.write('SCEUF')
   fs.writeFileSync(picked, pup)
-  await click('[data-rpcs3-firmware]')
+  const chooseFirmware = async () => {
+    await click('[data-rpcs3-firmware]')
+    await wait("!!document.querySelector('[data-file-entry]')")
+    await wait('!!document.querySelector(\'[data-file-name="PS3UPDAT.PUP"]\')')
+    assert.equal(
+      await ev(
+        `!!document.querySelector('[data-file-name="selected-game.pkg"], [data-file-name="Blur (USA).iso"]')`
+      ),
+      false
+    )
+    await click('[data-file-name="PS3UPDAT.PUP"]')
+  }
+  await chooseFirmware()
   await wait("!!document.querySelector('[data-rpcs3-cancel]')")
   assert.equal((await ev(call)).success, false, 'Maintenance blocks game launch')
   assert.equal(
@@ -254,7 +284,7 @@ async function run(win) {
   assert(fs.existsSync(picked), 'User input stays intact')
   fs.unlinkSync(path.join(runtime, 'portable/dev_flash/sys/external/liblv2.sprx'))
   installFails = true
-  await click('[data-rpcs3-firmware]')
+  await chooseFirmware()
   await wait("!!document.querySelector('[data-rpcs3-status] [role=alert]')")
   assert.match(
     await ev("document.querySelector('[data-rpcs3-status] [role=alert]').textContent"),
@@ -263,7 +293,7 @@ async function run(win) {
   assert.equal((await ev('window.electronAPI.getRpcs3Status()')).operation, null)
   installFails = false
   installExitCode = 3221226505
-  await click('[data-rpcs3-firmware]')
+  await chooseFirmware()
   await wait(
     "!document.querySelector('[data-rpcs3-firmware]').disabled && !!document.querySelector('[data-rpcs3-launch]')"
   )
@@ -293,6 +323,9 @@ async function run(win) {
   pkgBytes.write('UP0001-NPUB12345_00-FIXTURE0000000000', 0x30)
   fs.writeFileSync(picked, pkgBytes)
   await click('[data-rpcs3-package]')
+  await wait("!!document.querySelector('[data-file-entry]')")
+  await wait('!!document.querySelector(\'[data-file-name="selected-game.pkg"]\')')
+  await click('[data-file-name="selected-game.pkg"]')
   await wait(
     "!document.querySelector('[data-rpcs3-package]').disabled && document.querySelectorAll('[data-game-card]').length===3"
   )
@@ -304,8 +337,21 @@ async function run(win) {
     path.join(runtime, 'portable/dev_hdd0/game/NPUB12345/USRDIR/EBOOT.BIN')
   )
   assert.equal(installedGame.systemShort, 'PS3')
+  assert.equal(
+    installedGame.cover,
+    path.join(runtime, 'portable/dev_hdd0/game/NPUB12345/ICON0.PNG')
+  )
+  assert.equal(
+    installedGame.backdrop,
+    path.join(runtime, 'portable/dev_hdd0/game/NPUB12345/PIC1.PNG')
+  )
+  assert.match(installedGame.coverUrl, /^game-media:/)
+  assert.match(installedGame.backdropUrl, /^game-media:/)
+  assert.notEqual(installedGame.coverUrl, installedGame.backdropUrl)
   // Add Game routes packages through the same installer, and a reinstall never duplicates the title.
-  const imported = await ev('window.electronAPI.addGames()')
+  const imported = await ev(
+    `(async()=>{const listing=await window.electronAPI.listFiles({kind:'games',path:${JSON.stringify(path.dirname(picked))}});return window.electronAPI.addGames([listing.entries.find(e=>e.name===${JSON.stringify(path.basename(picked))}).token])})()`
+  )
   assert.equal(imported.success, true)
   assert.equal(
     (await ev('window.electronAPI.getLocalGames()')).filter((g) => g.titleId === 'NPUB12345')
@@ -319,6 +365,23 @@ async function run(win) {
   await click('[data-rpcs3-launch]')
   for (let i = 0; i < 150 && !bridge; i++) await delay(20)
   assert(bridge, 'Native bridge started after RPCS3 spawn')
+  assert.equal(JSON.parse(commands[0]).watchReady, true)
+  assert(
+    !actions.some((a) => a[0] === 'hide'),
+    'Compilation remains behind Zenith until render readiness'
+  )
+  bridge.stdout.emit('data', 'home\n')
+  await wait("!!document.querySelector('[data-console-modal=session]')")
+  assert.equal((await ev('window.electronAPI.resumeSession()')).waitingForRender, true)
+  await wait("!document.querySelector('[data-console-modal=session]')")
+  assert(!actions.some((a) => a[0] === 'hide'), 'Resume during compilation must retain the mask')
+  bridge.stdout.emit('data', 'rea')
+  assert(!actions.some((a) => a[0] === 'hide'))
+  bridge.stdout.emit('data', 'dy\n')
+  assert(
+    actions.some((a) => a[0] === 'hide'),
+    'Ready render surface releases loading mask'
+  )
   const launch = spawns.find((entry) => entry.args[0] === '--no-gui')
   assert.deepEqual(launch.args, ['--no-gui', game])
   assert.equal(launch.options.cwd, runtime)
@@ -341,8 +404,21 @@ async function run(win) {
   assert.equal(commands.at(-1), 'resume\n')
   assert(actions.some((a) => a[0] === 'setAlwaysOnTop' && a[1] === false))
   assert(!emulator.killed)
+  // Restart twice: each old child closes before a fresh --no-gui process starts.
+  for (let restart = 0; restart < 2; restart++) {
+    const previous = emulator
+    bridge.stdout.emit('data', 'home\n')
+    await wait("!!document.querySelector('[data-restart-session]')")
+    await click('[data-restart-session]')
+    for (let i = 0; i < 200 && emulator === previous; i++) await delay(20)
+    assert(previous.killed, 'Previous process must be terminated')
+    assert.notEqual(emulator, previous, 'Restart creates a fresh process')
+    await delay(80)
+    bridge.stdout.emit('data', 'ready\n')
+    await delay(40)
+  }
   await ev('window.electronAPI.stopSession()')
-  await wait('window.stopped===1')
+  await wait('window.stopped===3')
   assert(emulator.killed)
   assert(!shortcuts.has('F10'))
   assert(commands.includes('stop\n'))
@@ -385,6 +461,29 @@ async function run(win) {
   assert.equal(scanned.games.filter((g) => g.rpcs3Installed).length, 2)
   assert.equal(scanned.games.find((g) => g.titleId === 'NPUB12345').gameId, installedGame.gameId)
   assert(fs.readFileSync(path.join(profile, 'games.json'), 'utf8').includes('Manual Scan Game'))
+  // Q menu rescans this installed PS3 title through the same IPC path as other platforms.
+  await wait("!document.querySelector('dialog[open]')")
+  await ev('document.querySelector(\'[data-game-id="rpcs3-NPUB12345"]\').focus();undefined')
+  await delay(50)
+  await ev(
+    "document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'q',code:'KeyQ',bubbles:true}));undefined"
+  )
+  await wait("!!document.querySelector('[data-rescrape-game]:not(:disabled)')")
+  const requestsBefore = mediaRequests.length
+  await click('[data-rescrape-game]')
+  await wait("!document.querySelector('dialog[open]')")
+  for (let i = 0; i < 100 && mediaRequests.length === requestsBefore; i++) await delay(20)
+  assert(mediaRequests.length > requestsBefore, 'Q action must issue fresh PS3 media requests')
+  await delay(100)
+  assert.equal(
+    (await ev('window.electronAPI.getLocalGames()')).find((g) => g.gameId === installedGame.gameId)
+      .backdrop,
+    installedGame.backdrop
+  )
+  await assert.rejects(
+    ev("window.electronAPI.scanAndScrapeGames({force:true,gameId:'unknown'})"),
+    /not in the library/
+  )
   // Removing or invalidating installed content must remove it even if a PKG import registered it.
   fs.unlinkSync(installedGame.path)
   assert(

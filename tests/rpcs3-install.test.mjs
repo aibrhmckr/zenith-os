@@ -22,13 +22,27 @@ const exec = promisify(execFile)
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'zenith-rpcs3-install-'))
-  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }))
   const runtime = createRpcs3Runtime({ userData: root, platform: 'win32' })
   runtime.ensureDirectories()
   const source = path.join(root, 'source')
   await fs.mkdir(source)
   await fs.writeFile(path.join(source, 'rpcs3.exe'), coreBinary('fixture.exe'))
   await fs.writeFile(path.join(source, 'support.txt'), 'synthetic support')
+  await fs.writeFile(path.join(source, 'runtime.dll'), coreBinary('runtime.dll'))
+  for (const name of [
+    'config/default.yml',
+    'config.yml',
+    'dev_hdd0/game/keep.txt',
+    'portable/config.yml',
+    'Config/injected.dll',
+    'dev_flash/firmware.PUP',
+    'plugins/Qt platform.dll'
+  ]) {
+    const file = path.join(source, name)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, 'synthetic archive member')
+  }
   const archive = path.join(root, 'fixture.7z')
   await exec(sevenZip.path7za, ['a', archive, '.'], { cwd: source, windowsHide: true })
   const bytes = await fs.readFile(archive)
@@ -68,10 +82,16 @@ test('RPCS3 official download verifies digest/CRC, preserves profile and publish
     await fs.readFile(path.join(f.runtime.configDirectory, 'keep.txt'), 'utf8'),
     'user settings'
   )
-  assert.equal(
-    await fs.readFile(path.join(f.runtime.directory, 'support.txt'), 'utf8'),
-    'synthetic support'
+  assert.deepEqual(
+    await fs.readFile(path.join(f.runtime.directory, 'runtime.dll')),
+    coreBinary('runtime.dll')
   )
+  assert.equal(
+    await fs.readFile(path.join(f.runtime.directory, 'plugins/Qt platform.dll'), 'utf8'),
+    'synthetic archive member'
+  )
+  for (const name of ['support.txt', 'config.yml', 'config', 'dev_hdd0', 'Config', 'dev_flash'])
+    assert.equal(await fs.stat(path.join(f.runtime.directory, name)).catch(() => null), null)
   assert(phases.includes('verifying'))
   assert(phases.includes('complete'))
   assert.equal(
@@ -88,10 +108,9 @@ test('RPCS3 rejects foreign assets, missing hashes, malicious entries and oversi
     '../rpcs3.exe',
     'C:/rpcs3.exe',
     'rpcs3.exe:Zone.Identifier',
-    'portable/dev_flash/a',
     'CON.txt',
     'x/../x',
-    'firmware.PUP'
+    'config/../escape.dll'
   ])
     assert.throws(() => validateRpcs3Listing('Path = ' + name + '\nSize = 1\n'), /Unsafe/)
   assert.throws(() => validateRpcs3Listing('Path = rpcs3.exe\nSize = 3000000000'), /limit/)
@@ -99,6 +118,137 @@ test('RPCS3 rejects foreign assets, missing hashes, malicious entries and oversi
     () => validateRpcs3Listing('Path = rpcs3.exe\nSize = 1\nSymbolic Link = elsewhere'),
     /Unsafe/
   )
+})
+
+test('RPCS3 listing ignores profile templates and firmware but retains exact binary paths', () => {
+  const names = [
+    'rpcs3.exe',
+    'runtime.dll',
+    'plugins/Qt platform.dll',
+    'config',
+    'config.yml',
+    'CONFIG/nested/plugin.dll',
+    'dev_hdd0/game/EBOOT.BIN',
+    'portable/rpcs3.exe',
+    'dev_flash/firmware.PUP',
+    'input_configs/pad.dll',
+    'README.txt'
+  ]
+  const listing = names.map((name) => `Path = ${name}\nSize = 1\n`).join('\n')
+  assert.deepEqual(
+    validateRpcs3Listing(listing).map((entry) => entry.Path),
+    names.slice(0, 3)
+  )
+  for (const extra of [
+    'Path = config/../../escape.dll\nSize = 1',
+    'Path = config/link\nSymbolic Link = ../../outside',
+    'Path = config/link\nHard Link = ../../outside',
+    'Path = config.yml:Zone.Identifier\nSize = 1',
+    'Path = RUNTIME.DLL\nSize = 1'
+  ])
+    assert.throws(() => validateRpcs3Listing(listing + '\n' + extra), /Unsafe/)
+  assert.throws(
+    () => validateRpcs3Listing('Path = rpcs3.exe\nFolder = +\nSize = 0'),
+    /must contain/
+  )
+})
+
+test('RPCS3 binary update preserves existing support files, firmware and virtual disk', async (t) => {
+  const f = await fixture(t)
+  const options = { ...f, platform: 'win32', arch: 'x64' }
+  await downloadRpcs3(options)
+  await f.firmware()
+  const support = path.join(f.runtime.directory, 'support.txt')
+  await fs.writeFile(support, 'user support')
+  const saved = path.join(f.runtime.configDirectory, 'dev_hdd0', 'savedata', 'demo')
+  await fs.mkdir(path.dirname(saved), { recursive: true })
+  await fs.writeFile(saved, 'saved game')
+  const config = path.join(f.runtime.directory, 'config.yml')
+  await fs.writeFile(config, 'user configuration')
+  let inspected = false
+  const execImpl = async (binary, args, opts) => {
+    const result = await exec(binary, args, opts)
+    if (args[0] === 'x') {
+      inspected = true
+      const extracted = args.find((arg) => arg.startsWith('-o')).slice(2)
+      assert.deepEqual((await fs.readdir(extracted)).sort(), [
+        'plugins',
+        'rpcs3.exe',
+        'runtime.dll'
+      ])
+      assert(args.includes('-spd'))
+      assert(args.some((arg) => arg.startsWith('-i@')))
+    }
+    return result
+  }
+  const phases = []
+  assert.equal(
+    (
+      await downloadRpcs3({
+        ...options,
+        update: true,
+        fetchImpl: async (url) =>
+          url.includes('/releases/latest')
+            ? Response.json({ tag_name: 'new-release', assets: [f.asset] })
+            : new Response(f.bytes),
+        execImpl,
+        progress: (p) => phases.push(p.phase)
+      })
+    ).success,
+    true
+  )
+  assert(inspected, 'Excluded content never reaches the extraction directory')
+  assert.equal(phases.at(-1), 'complete')
+  assert.equal(await fs.readFile(config, 'utf8'), 'user configuration')
+  assert.equal(await fs.readFile(support, 'utf8'), 'user support')
+  assert.equal(await fs.readFile(saved, 'utf8'), 'saved game')
+  assert.equal(f.runtime.status().firmware.ready, true)
+})
+
+test('RPCS3 remembers the installed release, skips matching assets and repairs a missing executable', async (t) => {
+  const f = await fixture(t)
+  let tag = 'v1',
+    downloads = 0,
+    lookups = 0
+  const phases = []
+  const options = {
+    ...f,
+    platform: 'win32',
+    arch: 'x64',
+    progress: (value) => phases.push(value.phase),
+    fetchImpl: async (url) => {
+      if (url.includes('/releases/latest')) {
+        lookups++
+        return Response.json({ tag_name: tag, assets: [f.asset] })
+      }
+      downloads++
+      return new Response(f.bytes)
+    }
+  }
+  await downloadRpcs3(options)
+  const receipt = path.join(f.runtime.directory, 'zenith-release.json')
+  assert.equal(JSON.parse(await fs.readFile(receipt, 'utf8')).installedVersion, 'v1')
+  phases.length = 0
+  assert.equal((await downloadRpcs3({ ...options, update: true })).upToDate, true)
+  assert.equal(downloads, 1)
+  assert.equal(lookups, 2)
+  assert.deepEqual(phases, [], 'A matching release creates no download task')
+  tag = 'v2'
+  await downloadRpcs3({ ...options, update: true })
+  assert.equal(downloads, 2)
+  assert.equal(JSON.parse(await fs.readFile(receipt, 'utf8')).installedVersion, 'v2')
+  await fs.unlink(path.join(f.runtime.directory, 'rpcs3.exe'))
+  await downloadRpcs3({ ...options, update: true })
+  assert.equal(downloads, 3, 'A receipt cannot mask a missing executable')
+  tag = 'v3'
+  const goodDigest = f.asset.digest
+  f.asset.digest = 'sha256:' + '0'.repeat(64)
+  await assert.rejects(downloadRpcs3({ ...options, update: true }), /SHA-256/)
+  assert.equal(JSON.parse(await fs.readFile(receipt, 'utf8')).installedVersion, 'v2')
+  f.asset.digest = goodDigest
+  await fs.writeFile(receipt, '{invalid')
+  await downloadRpcs3({ ...options, update: true })
+  assert.equal(JSON.parse(await fs.readFile(receipt, 'utf8')).installedVersion, 'v3')
 })
 
 test('bad SHA-256, redirect, network errors and rollback never publish a ready executable', async (t) => {
@@ -122,6 +272,8 @@ test('bad SHA-256, redirect, network errors and rollback never publish a ready e
   f.asset.digest = 'sha256:' + createHash('sha256').update(f.bytes).digest('hex')
   const support = path.join(f.runtime.directory, 'support.txt')
   await fs.writeFile(support, 'original')
+  const originalDll = Buffer.from('previous DLL preserved by rollback')
+  await fs.writeFile(path.join(f.runtime.directory, 'runtime.dll'), originalDll)
   let checks = 0
   const runtime = {
     ...f.runtime,
@@ -133,6 +285,7 @@ test('bad SHA-256, redirect, network errors and rollback never publish a ready e
   await assert.rejects(downloadRpcs3({ ...options, runtime }), /failed verification/)
   assert(checks >= 2)
   assert.equal(await fs.readFile(support, 'utf8'), 'original')
+  assert.deepEqual(await fs.readFile(path.join(f.runtime.directory, 'runtime.dll')), originalDll)
   assert.equal(f.runtime.status().executableReady, false)
 })
 

@@ -77,7 +77,7 @@ async function request(url, fetchImpl, signal) {
   throw Error('Too many RPCS3 download redirects.')
 }
 
-/** Validate every 7-Zip entry before extraction: no escapes, ADS, links or profile/firmware data. */
+/** Validate paths/links first, then select binary files outside user-owned profile trees. */
 export function validateRpcs3Listing(text) {
   const entries = text
     .trim()
@@ -95,6 +95,7 @@ export function validateRpcs3Listing(text) {
     )
   let total = 0
   const names = new Set()
+  const binaries = []
   if (!entries.length || entries.length > 20000) throw Error('Invalid archive entry count.')
   for (const entry of entries) {
     const name = (entry.Path || '').replaceAll('\\', '/')
@@ -112,8 +113,6 @@ export function validateRpcs3Listing(text) {
           [...part].some((c) => c.charCodeAt(0) < 32) ||
           /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)
       ) ||
-      /(^|\/)(portable|dev_flash[23]?|dev_hdd[01]|PS3_GAME|firmware|bios)(\/|$)/i.test(name) ||
-      /\.(pup|pkg|rap|rif|iso|bin)$/i.test(name) ||
       entry['Symbolic Link'] ||
       entry['Hard Link'] ||
       /l/.test(entry.Attributes || '') ||
@@ -124,9 +123,24 @@ export function validateRpcs3Listing(text) {
     const size = Number(entry.Size || 0)
     if (!Number.isSafeInteger(size) || size < 0 || (total += size) > MAX_EXPANDED)
       throw Error('RPCS3 extraction limit exceeded.')
+    // Official releases can include config templates and empty VFS directories. These
+    // are harmless metadata, but must never be extracted over a user's portable profile.
+    if (
+      entry.Folder === '+' ||
+      /^D/.test(entry.Attributes || '') ||
+      parts.some((part) =>
+        /^(?:portable|dev_flash[23]?|dev_hdd[01]|PS3_GAME|firmware|bios|saves|savedata|states|config|input_configs|cache|logs|screenshots)(?:\.|$)/i.test(
+          part
+        )
+      ) ||
+      !/\.(exe|dll)$/i.test(name)
+    )
+      continue
+    binaries.push({ ...entry, Path: name })
   }
-  if (!names.has('rpcs3.exe')) throw Error('Archive must contain rpcs3.exe at its root.')
-  return entries
+  if (!binaries.some((entry) => entry.Path.toLowerCase() === 'rpcs3.exe'))
+    throw Error('Archive must contain rpcs3.exe at its root.')
+  return binaries
 }
 
 /** Reject junctions/symlinks in an owned path before writes or cleanup. */
@@ -162,11 +176,12 @@ export async function downloadRpcs3({
   fetchImpl = fetch,
   execImpl = exec,
   platform = process.platform,
-  arch = process.arch
+  arch = process.arch,
+  update = false
 }) {
   if (platform !== 'win32' || arch !== 'x64')
     throw Error('Automatic RPCS3 download supports Windows x64 only.')
-  if (runtime.status().executableReady)
+  if (!update && runtime.status().executableReady)
     return { success: true, existing: true, status: runtime.status() }
   const parent = dirname(runtime.directory)
   await assertOwnedPath(parent, runtime.directory)
@@ -179,7 +194,7 @@ export async function downloadRpcs3({
     AbortSignal.timeout(10 * 60 * 1000)
   ])
   try {
-    progress({ phase: 'lookup' })
+    if (!update) progress({ phase: 'lookup' })
     const metadata = await request(
       RPCS3_RELEASE_API,
       fetchImpl,
@@ -192,7 +207,31 @@ export async function downloadRpcs3({
       if (size > 2 * 1024 * 1024) throw Error('Release metadata too large.')
       chunks.push(Buffer.from(chunk))
     }
-    const asset = selectRpcs3Asset(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+    const release = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    const asset = selectRpcs3Asset(release)
+    const installedVersion = release.tag_name || asset.name
+    const versionFile = join(runtime.directory, 'zenith-release.json')
+    await assertOwnedPath(parent, versionFile)
+    if (update && runtime.status().executableReady) {
+      try {
+        const previous = JSON.parse(await fs.readFile(versionFile, 'utf8'))
+        const executable = await fs.stat(join(runtime.directory, 'rpcs3.exe'))
+        if (
+          previous.installedVersion === installedVersion &&
+          previous.assetSha256 === asset.sha256 &&
+          previous.executableSize === executable.size &&
+          previous.executableMtimeMs === executable.mtimeMs
+        )
+          return {
+            success: true,
+            upToDate: true,
+            version: installedVersion,
+            status: runtime.status()
+          }
+      } catch {
+        // Older/manual installations and damaged metadata get one verified install to establish provenance.
+      }
+    }
     const archive = join(stage, basename(asset.name))
     const response = await request(asset.browser_download_url, fetchImpl, combined)
     const hash = createHash('sha256')
@@ -228,12 +267,19 @@ export async function downloadRpcs3({
     }
     progress({ phase: 'verifying' })
     const { stdout } = await execImpl(seven, ['l', '-slt', '-ba', archive], opts)
-    const entries = validateRpcs3Listing(stdout)
+    const files = validateRpcs3Listing(stdout)
     await execImpl(seven, ['t', archive, '-y'], opts)
     const extracted = join(stage, 'extracted')
+    // An exact UTF-8 include list keeps skipped files out of staging as well as the
+    // live runtime; -spd disables wildcard interpretation of member names.
+    const includeList = join(stage, 'binaries.txt')
+    await fs.writeFile(includeList, files.map((entry) => entry.Path).join('\n'), 'utf8')
     progress({ phase: 'extracting' })
-    await execImpl(seven, ['x', archive, '-o' + extracted, '-y'], opts)
-    const files = entries.filter((e) => e.Folder !== '+' && !/^D/.test(e.Attributes || ''))
+    await execImpl(
+      seven,
+      ['x', archive, '-o' + extracted, '-y', '-spd', '-r-', '-scsUTF-8', '-i@' + includeList],
+      opts
+    )
     // Validate extracted types, sizes and x64 PE before any existing runtime files are touched.
     for (const e of files) {
       const file = join(extracted, e.Path)
@@ -288,8 +334,21 @@ export async function downloadRpcs3({
     }
     const status = runtime.status()
     if (!status.executableReady) throw Error('Installed RPCS3 executable failed verification.')
+    // Persist only after successful publication; failed downloads/rollback never advance the release tag.
+    const executable = await fs.stat(join(runtime.directory, 'rpcs3.exe'))
+    const versionTemporary = join(stage, 'zenith-release.json')
+    await fs.writeFile(
+      versionTemporary,
+      JSON.stringify({
+        installedVersion,
+        assetSha256: asset.sha256,
+        executableSize: executable.size,
+        executableMtimeMs: executable.mtimeMs
+      })
+    )
+    await fs.rename(versionTemporary, versionFile)
     progress({ phase: 'complete' })
-    return { success: true, status, version: asset.name }
+    return { success: true, status, version: installedVersion }
   } catch (error) {
     for (const item of installed.reverse()) {
       try {
@@ -306,7 +365,8 @@ export async function downloadRpcs3({
   } finally {
     if (!rollbackFailed) {
       await assertOwnedPath(parent, stage)
-      await fs.rm(stage, { recursive: true, force: true })
+      // Windows may briefly keep replaced binaries open during the final directory cleanup.
+      await fs.rm(stage, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
     }
   }
 }

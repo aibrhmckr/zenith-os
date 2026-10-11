@@ -1,8 +1,45 @@
 /* eslint-disable react/prop-types -- Internal modal shared by console panels. */
-import { useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback, useId } from 'react'
 import { emitSound } from '../hooks/useSoundEffects'
 import InputHint from './InputHint'
 import { useI18n } from '../hooks/i18n'
+import { statusFocusTarget } from '../hooks/statusNavigation'
+
+/** Preserve each card's actions/Details, then move within the measured outer grid. */
+function moveStatusFocus(dialog, direction) {
+  const enabled = (root) =>
+    [...root.querySelectorAll('button:not(:disabled)')].filter(
+      (item) => item.closest('dialog') === dialog && item.getClientRects().length
+    )
+  const controls = enabled(dialog)
+  const cards = [...dialog.querySelectorAll('[data-status-card]')]
+  const current = controls.includes(document.activeElement)
+    ? document.activeElement
+    : controls.find((item) => item.dataset.controllerFocused === 'true') ||
+      enabled(cards[0] || dialog)[0]
+  if (!current) return
+  const grid = dialog.querySelector('.system-status-list')
+  const columns = grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : 1
+  const target =
+    statusFocusTarget(
+      cards.map((card) =>
+        enabled(card).map((item) => ({
+          id: item,
+          rect: item.getBoundingClientRect(),
+          details: item.hasAttribute('data-status-details-toggle')
+        }))
+      ),
+      current,
+      direction,
+      columns
+    ) || current
+  if (target !== current) emitSound('navigate')
+  controls.forEach((item) => {
+    item.dataset.controllerFocused = String(item === target)
+  })
+  target.focus({ preventScroll: true })
+  target.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
 /**
  * Render a native modal dialog with controller focus ownership. Options use an explicit
  * selection index; filters use measured grid columns and Settings uses a vertical list.
@@ -14,7 +51,15 @@ import { useI18n } from '../hooks/i18n'
  * @param {boolean} options.busy - Disable actions while the parent operation is pending.
  * @param {string} options.kind - Media category or modal type selecting this operation's behavior.
  */
-export default function ConsoleModal({ title, children, onClose, busy = false, kind }) {
+export default function ConsoleModal({
+  title,
+  children,
+  onClose,
+  busy = false,
+  kind,
+  headerActions
+}) {
+  const titleId = useId()
   /**
    * Native dialog ref; its modal top layer traps browser focus independently of React state.
    */
@@ -68,9 +113,10 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
       dialog = ref.current
     dialog.showModal()
     const initial =
+      dialog.querySelector('[data-settings-update-focus="true"]') ||
       dialog.querySelector('[data-initial-focus]:not(:disabled)') ||
       dialog.querySelector(
-        '[data-modal-content] button:not(:disabled),[data-modal-content] input'
+        '[data-modal-content] button:not(:disabled),[data-modal-content] input,[data-modal-content] [data-focusable]'
       ) ||
       dialog.querySelector('button')
     focusedOptionIndex.current = 0
@@ -150,6 +196,16 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
         return
       }
       const { hit, move, axes, now } = detail
+      if (kind === 'downloads' && hit(2)) {
+        dialog.querySelector('[data-clear-notifications]')?.click()
+        return
+      }
+      if (kind === 'fileBrowser') {
+        dialog
+          .querySelector('[data-file-browser]')
+          ?.dispatchEvent(new CustomEvent('file-navigation', { detail }))
+        return
+      }
       const browser = dialog.querySelector('[data-core-browser]')
       if (
         browser &&
@@ -160,7 +216,36 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
         return
       }
       if (hit(1) && !busy) {
+        const confirmation = dialog.querySelector(
+          '[data-wallpaper-confirming="true"], [data-wallpaper-selecting="true"]'
+        )
+        if (confirmation) {
+          confirmation.dispatchEvent(new CustomEvent('wallpaper-navigation', { detail }))
+          return
+        }
         onClose()
+        return
+      }
+      if (kind === 'wallpapers') {
+        dialog
+          .querySelector('[data-wallpaper-gallery]')
+          ?.dispatchEvent(new CustomEvent('wallpaper-navigation', { detail }))
+        return
+      }
+      if (['systems', 'rpcs3'].includes(kind)) {
+        if (move) moveStatusFocus(dialog, move)
+        else if (hit(0)) {
+          const active = document.activeElement
+          const target =
+            active?.closest('dialog') === dialog && active.matches('button:not(:disabled)')
+              ? active
+              : dialog.querySelector('button[data-controller-focused="true"]:not(:disabled)')
+          target?.click()
+        }
+        if (axes[3] && now - (dialog.scrollAt || 0) > 100) {
+          dialog.scrollBy({ top: axes[3] * 90, behavior: 'smooth' })
+          dialog.scrollAt = now
+        }
         return
       }
       if (['options', 'session'].includes(kind)) {
@@ -182,10 +267,10 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
         return
       }
       const controls = Array.from(
-        dialog.querySelectorAll('button:not(:disabled),select,input')
+        dialog.querySelectorAll('button:not(:disabled),select,input,[data-focusable]')
       ).filter(
         /**
-         * Retain only Array.from( dialog.querySelectorAll('button:not(:disabled),select,input') ) entries satisfying controls's local predicate; excluded values do not reach the next stage.
+         * Retain only Array.from( dialog.querySelectorAll('button:not(:disabled),select,input,[data-focusable]') ) entries satisfying controls's local predicate; excluded values do not reach the next stage.
          *
          * @param {*} el - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
@@ -238,9 +323,25 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
               : index
         rememberedIndex.current = target
         const next = items[target]
+        // Controller focus must remain visible even when Chromium omits focusin on a hidden/restored window.
+        controls.forEach((item) => {
+          item.dataset.controllerFocused = String(item === next)
+        })
         if (next && next !== document.activeElement) emitSound('navigate')
         next?.focus({ preventScroll: true })
-        next?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        // At either Settings boundary, reveal the modal chrome/footer as well as
+        // the focused card. Use one scroll command so smooth animations do not compete.
+        if (kind === 'settings' && target === 0) {
+          dialog.scrollTo({ top: 0, behavior: 'smooth' })
+        } else if (
+          kind === 'settings' &&
+          move === 'down' &&
+          next?.hasAttribute('data-software-update')
+        ) {
+          dialog.scrollTo({ top: dialog.scrollHeight, behavior: 'smooth' })
+        } else {
+          next?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }
       }
       if (hit(0))
         controls
@@ -268,7 +369,7 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
     <dialog
       ref={ref}
       data-console-modal={kind}
-      aria-labelledby="console-modal-title"
+      aria-labelledby={titleId}
       className="console-modal"
       onCancel={
         /**
@@ -288,9 +389,11 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
          * @param {*} e - DOM event from this control.
          */
         (e) => {
+          const close = ref.current.querySelector('[data-modal-close]')
+          if (close) close.dataset.controllerFocused = String(close === e.target)
           const controls = Array.from(
             ref.current.querySelectorAll(
-              '[data-modal-content] button:not(:disabled),[data-modal-content] select,[data-modal-content] input'
+              '[data-modal-content] button:not(:disabled),[data-modal-content] select,[data-modal-content] input,[data-modal-content] [data-focusable]'
             )
           )
           const selected = controls.indexOf(e.target)
@@ -335,6 +438,36 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
          */
         (e) => {
           e.stopPropagation()
+          if (kind === 'downloads' && e.key.toLowerCase() === 'x') {
+            e.preventDefault()
+            ref.current.querySelector('[data-clear-notifications]')?.click()
+          }
+          if (
+            ['filter', 'settings'].includes(kind) &&
+            e.key.startsWith('Arrow') &&
+            !e.target.closest('.console-dropdown,input,select,textarea,[data-hotkey-listening]')
+          ) {
+            e.preventDefault()
+            ref.current.dispatchEvent(
+              new CustomEvent('controller-input', {
+                detail: {
+                  move: e.key.slice(5).toLowerCase(),
+                  hit: () => false,
+                  axes: [0, 0, 0, 0],
+                  now: performance.now(),
+                  inputMode: 'keyboard'
+                }
+              })
+            )
+          }
+          if (
+            ['systems', 'rpcs3'].includes(kind) &&
+            e.target.closest('dialog') === ref.current &&
+            e.key.startsWith('Arrow')
+          ) {
+            e.preventDefault()
+            moveStatusFocus(ref.current, e.key.slice(5).toLowerCase())
+          }
           if (['options', 'session'].includes(kind) && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
             e.preventDefault()
             focusOption(focusedOptionIndex.current + (e.key === 'ArrowDown' ? 1 : -1), true)
@@ -343,14 +476,17 @@ export default function ConsoleModal({ title, children, onClose, busy = false, k
       }
     >
       <header className="mb-6 flex items-center justify-between gap-5">
-        <h2 id="console-modal-title" className="text-2xl font-bold">
+        <h2 id={titleId} className="text-2xl font-bold">
           {title}
         </h2>
-        <button data-modal-close disabled={busy} onClick={onClose}>
-          <InputHint keyboard="Esc" gamepad="B">
-            {t('close')}
-          </InputHint>
-        </button>
+        <div className="modal-header-actions">
+          {headerActions}
+          <button data-modal-close disabled={busy} onClick={onClose}>
+            <InputHint keyboard="Esc" gamepad="B">
+              {t('close')}
+            </InputHint>
+          </button>
+        </div>
       </header>
       <div data-modal-content>{children}</div>
     </dialog>

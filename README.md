@@ -105,7 +105,8 @@ Tests: `npm run test:scraper` covers offline CDN, cache, and media behavior;
 
 Use the arrow keys, D-pad, or left stick to navigate the responsive library grid.
 **LB/RB** on a gamepad, or **PageUp/PageDown** on a keyboard, changes the console
-filter. **Y** opens Game Options, **H** opens the guide, and **B/Escape** leaves
+filter. **Y** opens search; **X** clears an active search or opens Game Options when
+search is empty. **H** opens the guide, and **B/Escape** leaves
 search or closes the active console menu.
 
 The header clock reads the system time in `HH:mm` format and updates every second.
@@ -140,7 +141,7 @@ indicators with a simulated gamepad in the real Electron interface.
 
 ## Lore and Original Manual Drawer
 
-For the selected game, press **H**, or choose **Y → Game Options → Guide & Lore**,
+For the selected game, press **H**, or choose **X → Game Options → Guide & Lore** (with no active search),
 to open the frosted-glass drawer on the right. **Y/H**, **B**, or **Escape** closes
 it. Typing H in the search input does not open the drawer. While the drawer is
 open, background game selection, launching, and console filters do not receive
@@ -246,8 +247,9 @@ users select their own dumps.
 | Action                             | Gamepad            | Keyboard                            |
 | ---------------------------------- | ------------------ | ----------------------------------- |
 | Launch game                        | A                  | Enter                               |
-| Game Options / Guide               | Y → Guide & Lore   | O / H                               |
-| Search                             | X                  | /                                   |
+| Game Options / Guide (no search)   | X → Guide & Lore   | Q or O / H                          |
+| Search                             | Y                  | /                                   |
+| Clear active search                | X                  | X / Backspace (outside text input)  |
 | Filter panel                       | View               | F                                   |
 | Change console                     | LB / RB            | PageUp / PageDown                   |
 | Settings                           | Menu               | Context Menu key or Settings button |
@@ -256,7 +258,11 @@ users select their own dumps.
 | Back / close                       | B                  | Escape                              |
 | Zenith menu (dashboard or in-game) | View + Menu / Home | Escape / F10                        |
 
-Toggle preview audio with **RT / M**; rescan the library with **LT / R**.
+Toggle preview audio with **M**; rescan the library with **LT / R**. **RT** opens notifications.
+From the first game row, **Up** focuses the action dock without opening search. Use
+**Left/Right** to choose Filter, Search, Add Game or Scan, **A** to activate, and
+**Down/B** to return to the selected game. Inside the on-screen keyboard, X deletes,
+Y inserts a space, and R2/Start completes the search.
 
 Search opens only through an explicit command; moving up from the first row keeps
 focus on that row. Physical keyboard and mouse searches do not open the OSK. On
@@ -282,12 +288,15 @@ applies it, and B closes the dropdown first. Use the D-pad or left stick through
 Settings, and B to leave. **Settings → Audio** provides two persistent switches:
 **Menu sound effects** and **Video & background preview audio**.
 
-Menu effects use the supplied `navigate.wav`, `toggle.wav`, and `launch.wav` files
-under `src/renderer/src/assets/sounds/`, bundled through Vite. There are no synthetic
-tones or WAV upload controls. Disabling menu sounds silences navigation and toggle
-effects; the launch sound plays independently while preview audio fades out over
-500 ms. Navigation effects use a pool of four Audio instances so rapid movements
-can overlap naturally. Previews wait 800 ms, fade in to 30% over 400 ms, and fade
+Menu effects use original `navigate.wav`, `toggle.wav`, `back.wav`, and `launch.wav`
+assets under `src/renderer/src/assets/sounds/`, bundled through Vite. Regenerate
+the deterministic 44.1 kHz / 16-bit PCM voices with `node scripts/generate-sounds.js`.
+Synthesis happens at build preparation, not through live browser oscillators.
+Disabling menu sounds silences navigation, confirmation and back effects; the launch sound plays independently while preview audio fades out over
+500 ms. Navigation effects use six preloaded Audio instances with no input throttle;
+when all channels are busy, the oldest is restarted so new focus feedback is never
+discarded. Up to six navigation sounds can overlap naturally. Previews wait
+800 ms, fade in to 30% over 400 ms, and fade
 out over 150 ms when a card is left. Menu sounds are enabled by default; video/BGM
 audio is disabled. Preferences are stored under the `zenith-preferences` local
 storage key and survive application restarts.
@@ -376,7 +385,7 @@ scraper writes before removing the cache.
 
 Dynamic media is stored only under `app.getPath('userData')/media/`. DLL, EXE, BIOS,
 ROM, and media patterns are protected by `.gitignore` and distribution exclusions.
-A narrow Git exception permits the three supplied application WAV files; downloaded
+A narrow Git exception permits the four generated application WAV files; downloaded
 game media is not covered by that exception. Previously tracked RetroArch DLL/EXE
 files were removed from the Git index while preserving local copies. Historical
 commits were not rewritten.
@@ -532,14 +541,14 @@ npm run build:linux
 
 The default Windows target is NSIS, with `oneClick=false`, `perMachine=false`, and
 `allowToChangeInstallationDirectory=true`. Desktop and Start Menu shortcuts and
-launch-after-install are enabled; `differentialPackage=false`. The artifact is
+launch-after-install are enabled; `differentialPackage=true`. The artifact is
 `dist/zenith-1.0.0-setup.exe`, with the version read from `package.json`.
 
 `npm run build:win` compiles the source and creates the NSIS package. To package an
 existing build, use `npx electron-builder --win nsis --x64`. A portable executable
 can be built separately with `npx electron-builder --win portable --x64`.
-`forceCodeSigning=false` and `signAndEditExecutable=false` allow development
-packaging without a certificate; they do not alter Windows security policy.
+`forceCodeSigning=false` allows development
+packaging without a certificate. `signAndEditExecutable=true` embeds `build/icon.ico` in the executable; the NSIS environment workaround remains enabled. These settings do not alter Windows security policy.
 
 On Windows, `scripts/nsis-process.cjs` is activated by the existing `beforePack`
 validation. For electron-builder 26.15.3, it normalizes only temporary EXE calls
@@ -617,3 +626,101 @@ Zenith OS is an open-source launcher and frontend interface designed for library
 
 - **RPCS3:** Downloaded only after user consent from [official releases](https://github.com/RPCS3/rpcs3-binaries-win/releases). See the [upstream source and license](https://github.com/RPCS3/rpcs3). Sony firmware and game packages remain user-provided.
 - **7-Zip extraction helper:** The 7zip-bin wrapper uses MIT; its bundled Windows 7za 21.07 uses upstream 7-Zip license terms. Included notices and LGPL text are in [resources/licenses](resources/licenses); [7-Zip 21.07 source](https://github.com/ip7z/7zip/tree/21.07) and [helper build sources](https://github.com/develar/7zip-bin) are available upstream. Preserve notices and satisfy corresponding-source obligations when distributing this helper.
+
+## Wallpapers and library cache
+
+Open **Settings → Wallpaper** to choose from five original animated themes,
+including **Luminescent Glade**, or import an image or muted looping video.
+Imported copies are stored in `userData/wallpapers/`. Game artwork remains the default
+priority unless **Show only the selected wallpaper** is enabled. This mode also
+stops all game preview video/audio and theme music, including audio fade tails.
+The preview-audio switch in Settings is disabled with an explanation while the
+mode is active; the saved audio preference is retained.
+
+Delete an imported wallpaper using its trash button or controller **X**, then confirm.
+For multiple items, enter **Select** mode with **Y** (keyboard **S**). Toggle imported
+cards with **A**, **Enter**, or a click, then choose **Delete selected / X** (keyboard
+**Delete**) and confirm. **B / Escape** cancels the confirmation first, then selection
+mode; marking a card never changes the active wallpaper. Entering selection mode
+keeps focus on the current card and immediately selects it (one selected). Moving
+to another card and pressing A toggles its checkbox without leaving selection mode.
+Unmarked files are kept. **Delete all wallpapers** also requires confirmation. Removing the active
+wallpaper restores **Zenith Minimal Dark**; original import files and built-in
+themes are preserved.
+
+**Scan library / R** reuses existing nonempty media files and only searches for
+missing media. **Game Options → Search media again** explicitly requests a refresh.
+The mouse cursor hides on gamepad input or after two seconds of inactivity and
+reappears when the mouse moves.
+
+## Notifications and software updates
+
+Open the header notification bell with the mouse, **D**, or controller **RT**.
+The panel shows task progress and results for media, cores, RPCS3 and application
+updates. Main persists bounded history in `userData/downloads.json`; live task
+snapshots use `downloads:progress`. Unknown download sizes use an indeterminate
+bar instead of a fabricated percentage. Completed cards fade out after four
+seconds; active, queued and failed tasks remain. Update cards open Settings with
+**Software Update** focused, without activating it. The notification panel has
+no update controls.
+
+Packaged releases check `aibrhmckr/zenith-os` on GitHub in the background using
+`electron-updater`. Publish the versioned NSIS installer, its `.blockmap` and
+`latest.yml` together and retain earlier artifacts for differential downloads.
+A full download remains the fallback when delta data is unavailable. Installation
+is authorized by **Settings → Software Update** and requires an idle
+emulator/maintenance state. Automatic startup checks only stage downloads;
+closing Zenith alone does not install an update. Development sessions do not
+contact the release feed.
+
+**Software Update** checks both the application and installed emulators in one
+background operation (`software:update`). Repeated clicks reuse the running job.
+The Settings card shows live component progress and checked/updated counts.
+Development builds skip application installers and report **Developer Build (Up to date)**
+while still checking installed emulators. Individual maintenance downloads feed this
+tracker; Notifications receives one final success or failure summary.
+Application installation/restart waits for successful emulator maintenance; any
+provider failure remains visible in Notifications. The operation refreshes
+installed Libretro cores and Windows RPCS3 binaries
+while preserving configuration, firmware, virtual disks and saves. It cannot run
+alongside a game. Windows RPCS3 launch retains Zenith's loading mask until the
+native PID watcher detects three consecutive positive-FPS render-window samples.
+After 120 seconds without that signal, the session menu offers restart or exit.
+Returning to a game still compiling keeps the loading mask. Linux uses the
+fullscreen configuration without this Windows-specific readiness watcher.
+
+## In-app file browser and session isolation
+
+**Add Game**, wallpaper import and the RPCS3 **Install Firmware / Install PKG** actions use the fullscreen
+in-app browser. Choose a drive or home directory, navigate with the D-pad/left stick
+or arrow keys, press **A / Enter** to enter a folder or import a file, and **X** to confirm the
+focused file. **B / Backspace** moves to the parent directory (closing at the root
+list); **Escape / Close** dismisses immediately. **LB/RB**, left/right arrows or
+**Page Up/Page Down** move between the quick-access, file-list and preview panels.
+Each panel remembers its focused row. The browser opens directly inside the user's
+home directory; quick-access locations appear only in the sidebar. Files are filtered
+for the requested action and show their physical size and modification date.
+Focused folders have an asynchronous content summary, including nested files of all
+types. Scans stop after 10,000 entries or a two-second work budget and do not follow
+links. Partial results are explicitly labeled; changing focus cancels the old scan.
+Selected files are copied through Main-owned, single-use tokens rather than arbitrary
+renderer paths. Original source files remain untouched. PUP and PKG actions have separate
+extension filters and purpose-bound tokens. Other consoles' BIOS uploads still use
+the operating system picker.
+
+System & Console Status presents consistent console cards with vector icons, friendly
+emulator names and physical Ready/Missing checks. RPCS3 shows its recorded release
+version only when the record matches the installed executable. Manual installations
+without a matching record show the emulator name without an inferred version.
+**Show details** reveals runtime paths and firmware diagnostics. RPCS3's four primary
+actions use a 2×2 grid with directional keyboard/controller navigation; download consent
+and operation cancellation remain separate actions.
+
+RPCS3 game-window keyboard shortcuts and controller PS/Home bindings are disabled
+in its managed portable profile, with original files backed up on first change.
+Other controller mappings and in-game system dialogs remain available. Use Zenith's
+session menu to return, stop, or **Restart game**. Restart terminates the owned child,
+waits for process close and cleanup, then runs the normal verified launch pipeline.
+If the process cannot stop within ten seconds, restart fails visibly instead of
+starting a second emulator. These controls do not guarantee prevention of unrelated
+RPCS3 crashes or override independent Steam desktop shortcuts.

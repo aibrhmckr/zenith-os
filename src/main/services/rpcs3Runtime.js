@@ -78,6 +78,7 @@ export function createRpcs3Runtime({ userData, platform = process.platform }) {
       executable,
       configDirectory,
       executableReady: false,
+      installedVersion: null,
       firmware: { ready: false, directory: join(configDirectory, 'dev_flash'), version: null },
       ready: false,
       error: null
@@ -107,6 +108,22 @@ export function createRpcs3Runtime({ userData, platform = process.platform }) {
             header[5] === 1 &&
             header.readUInt16LE(18) === 62
           fs.accessSync(executable, fs.constants.X_OK)
+        }
+      }
+      // Optional release metadata describes this exact executable, never determines readiness.
+      if (result.executableReady) {
+        try {
+          const record = JSON.parse(prefix(join(directory, 'zenith-release.json'), 16384))
+          const stat = fs.statSync(executable)
+          if (
+            record.executableSize === stat.size &&
+            record.executableMtimeMs === stat.mtimeMs &&
+            typeof record.installedVersion === 'string' &&
+            /^[\w.+-]{1,120}$/.test(record.installedVersion)
+          )
+            result.installedVersion = record.installedVersion
+        } catch {
+          /* Manual installations may have no release metadata. */
         }
       }
       result.firmware.directory = dataDirectory()

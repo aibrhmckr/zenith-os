@@ -15,6 +15,15 @@ const CACHE_SETTINGS = {
   Video: {
     'Shader Mode': 'Async Recompiler (multi-threaded)',
     'Disable On-Disk Shader Cache': false
+  },
+  Miscellaneous: {
+    'Start games in fullscreen mode': true,
+    'Pause emulation on RPCS3 focus loss': false,
+    // A PID-bound native watcher waits for a positive render FPS, not the compilation dialog.
+    'Window Title Format': 'FPS: %F | %T | RPCS3',
+    'Show PPU compilation hint': false,
+    'Show shader compilation hint': false,
+    'Show mouse and keyboard toggle hint': false
   }
 }
 
@@ -30,7 +39,7 @@ const XINPUT_MAPPING = {
   'Right Stick Down': 'RS Y-',
   Start: 'Start',
   Select: 'Back',
-  'PS Button': 'Guide',
+  'PS Button': '',
   Square: 'X',
   Cross: 'A',
   Circle: 'B',
@@ -106,9 +115,76 @@ function write(root, file, before, after) {
   }
 }
 
+/** Disable RPCS3 game-window shortcuts (including Home and internal Restart), preserving unrelated INI data. */
+function isolateGui(root, configRoot) {
+  const file = join(configRoot, 'GuiConfigs', 'CurrentSettings.ini')
+  ownedPath(root, file)
+  if (fs.existsSync(file) && (!fs.statSync(file).isFile() || fs.statSync(file).size > 1024 * 1024))
+    throw Error('Invalid RPCS3 GUI configuration.')
+  const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+  let section = '',
+    found = false
+  const lines = before
+    .split(/\r?\n/)
+    .filter((line) => {
+      const heading = line.match(/^\s*\[([^\]]+)\]/)
+      if (heading) section = heading[1]
+      return !(section === 'GSFrame' && /^\s*disableKbHotkeys\s*=/.test(line))
+    })
+    .flatMap((line) => {
+      if (/^\s*\[GSFrame\]/.test(line)) {
+        found = true
+        return [line, 'disableKbHotkeys=true']
+      }
+      return [line]
+    })
+  if (!found) lines.push('[GSFrame]', 'disableKbHotkeys=true')
+  const after = lines.join('\n')
+  if (before === after) return
+  fs.mkdirSync(dirname(file), { recursive: true })
+  const backup = file + '.zenith-backup'
+  ownedPath(root, backup)
+  if (fs.existsSync(file) && !fs.existsSync(backup))
+    fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL)
+  const temporary = file + '.' + randomUUID() + '.tmp'
+  try {
+    fs.writeFileSync(temporary, after, { flag: 'wx' })
+    fs.renameSync(temporary, file)
+  } finally {
+    fs.rmSync(temporary, { force: true })
+  }
+}
+
+/** Include per-title profiles: a custom input profile must not re-enable the PS/Home binding. */
+function isolatePads(root, inputRoot) {
+  ownedPath(root, inputRoot)
+  if (!fs.existsSync(inputRoot)) return
+  for (const entry of fs.readdirSync(inputRoot, { withFileTypes: true })) {
+    const file = join(inputRoot, entry.name)
+    ownedPath(root, file)
+    if (entry.isDirectory()) {
+      isolatePads(root, file)
+      continue
+    }
+    if (
+      !entry.isFile() ||
+      !entry.name.endsWith('.yml') ||
+      entry.name === 'active_input_configurations.yml'
+    )
+      continue
+    const before = read(root, file),
+      after = structuredClone(before)
+    for (const [key, player] of Object.entries(after)) {
+      if (!/^Player [1-7] Input$/.test(key) || !player?.Handler) continue
+      player.Config = { ...mapping(player.Config ?? {}, key), 'PS Button': '' }
+    }
+    write(root, file, before, after)
+  }
+}
+
 /**
  * Prepare global defaults immediately before spawning RPCS3. No cache is deleted, moved or
- * recreated. Existing non-keyboard controller profiles and title-specific overrides survive.
+ * recreated. Existing controller mappings survive except PS/Home, reserved for Zenith.
  * Windows uses portable/config/; Linux uses portable/ directly. Only Windows has XInput.
  * @param {{configDirectory: string, platform: string}} options - Main-owned portable profile.
  */
@@ -159,7 +235,9 @@ export function prepareRpcs3Config({ configDirectory, platform }) {
       updates.push([inputFile, inputBefore, input])
     }
   }
-  // Parse and validate all inputs before writing any file. A failed write blocks spawn.
+  // Failed validation or writes block spawn; original changed files retain a backup.
   for (const [file, original, updated] of updates) write(configDirectory, file, original, updated)
   write(configDirectory, configFile, before, config)
+  isolatePads(configDirectory, join(configRoot, 'input_configs'))
+  isolateGui(configDirectory, configRoot)
 }

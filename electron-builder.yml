@@ -14,9 +14,12 @@ files:
   - '!**/{rpcs3,RPCS3,dev_flash,dev_flash2,dev_flash3,dev_hdd0,dev_hdd1,PS3_GAME}/**'
   - '!**/*.{[pP][uU][pP],[pP][kK][gG],[rR][aA][pP],[rR][iI][fF],[sS][eE][lL][fF],[sS][pP][rR][xX]}'
   - '!**/rpcs3*.{exe,EXE,AppImage}'
+  # Full 7-Zip extraction engine is a licensed utility, not an emulator core.
+  - node_modules/7zip-bin-full/**
 asarUnpack:
   - resources/**
   - node_modules/7zip-bin/**
+  - node_modules/7zip-bin-full/**
 beforePack: scripts/validate-emulators.cjs
 extraResources:
   - from: emulators/retroarch
@@ -36,10 +39,12 @@ extraResources:
       - '!retroarch-core-options.cfg'
       - '!session.cfg'
 win:
+  icon: build/icon.ico
   target: nsis
   executableName: zenith
   forceCodeSigning: false
-  signAndEditExecutable: false
+  # Resource editing embeds Zenith's icon in zenith.exe; no certificate is required.
+  signAndEditExecutable: true
 portable:
   artifactName: ${name}-${version}-${arch}-portable.${ext}
 nsis:
@@ -49,7 +54,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   runAfterFinish: true
-  differentialPackage: false
+  differentialPackage: true
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
@@ -73,5 +78,7 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
 publish:
-  provider: generic
-  url: https://example.com/auto-updates
+  provider: github
+  owner: aibrhmckr
+  repo: zenith-os
+  releaseType: release

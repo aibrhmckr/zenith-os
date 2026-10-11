@@ -5,6 +5,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const assert = require('node:assert/strict')
+const { discImage } = require('./fixtures/disc-image.cjs')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-media-test-'))
 const profile = path.join(root, 'profile')
 const roms = path.join(root, 'games')
@@ -15,7 +16,7 @@ const mediaId = (system, title, name) =>
   `${system.toLowerCase()}-${title.toLowerCase()}-${createHash('sha256').update(`${system}:${name}`).digest('hex').slice(0, 12)}`
 const alphaId = mediaId('PS2', 'Alpha', 'Alpha (USA).iso')
 const betaId = mediaId('NDS', 'Beta', 'Beta (USA).nds')
-fs.writeFileSync(path.join(roms, 'Alpha (USA).iso'), '')
+fs.writeFileSync(path.join(roms, 'Alpha (USA).iso'), discImage('PS2'))
 fs.writeFileSync(path.join(roms, 'Beta (USA).nds'), '')
 fs.mkdirSync(path.join(profile, 'media', alphaId), { recursive: true })
 fs.writeFileSync(path.join(profile, 'media', alphaId, 'theme.mp3'), '0123456789')
@@ -187,6 +188,9 @@ async function checkMedia(window) {
   await evaluate(
     'window.bgmUpdates=[]; window.removeBgmListener=window.electronAPI.onGameMediaUpdated(game=>window.bgmUpdates.push(game)); window.mediaEvents=[]; undefined'
   )
+  await evaluate(
+    'window.taskUpdates=[];window.stopTasks=window.electronAPI.onDownloadsProgress(tasks=>window.taskUpdates.push(tasks));undefined'
+  )
   releaseVideo()
   await waitFor(() => evaluate('window.bgmUpdates.some(game=>game.media.video)'))
   const videoUpdate = await evaluate('window.bgmUpdates[0]')
@@ -205,6 +209,17 @@ async function checkMedia(window) {
   assert.equal(update.gameId, betaId)
   assert.equal(update.media.music, path.join(profile, 'media', betaId, 'theme.mp3'))
   assert.equal(update.media.video, videoUpdate.media.video)
+  await waitFor(() =>
+    evaluate(
+      'window.taskUpdates.some(tasks=>tasks.some(t=>t.kind==="music" && t.status==="completed" && t.percent===100))'
+    )
+  )
+  assert(
+    (await evaluate('window.electronAPI.getDownloads()')).some(
+      (t) => t.kind === 'video' && t.status === 'completed'
+    )
+  )
+  await evaluate('window.stopTasks();undefined')
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(profile, 'games.json'))).games[betaId].media.music,
     update.media.music
@@ -227,7 +242,107 @@ async function checkMedia(window) {
   const priorRequests = downloads.length
   await evaluate("document.querySelector('[data-refresh-library]').click()")
   await waitFor(() => evaluate("!document.querySelector('[data-refresh-library]').disabled"))
-  assert.equal(downloads.length, priorRequests, 'Refresh reuses complete cached artwork')
+  assert.equal(
+    downloads.length,
+    priorRequests,
+    'Normal library refresh preserves cached artwork and previews'
+  )
+
+  // A real Q-menu action for a non-PS3 game must invoke the dedicated IPC, await
+  // completion and replace the visible cover URL even when the target path is unchanged.
+  await evaluate(
+    "document.querySelector('[aria-label=Alpha][data-game-card]').focus(); document.querySelector('[aria-label=Alpha][data-game-card]').dispatchEvent(new FocusEvent('focusin',{bubbles:true})); undefined"
+  )
+  const oldCover = await evaluate(
+    "document.querySelector('[aria-label=Alpha][data-game-card] img').src"
+  )
+  await evaluate(
+    "document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'q',code:'KeyQ',bubbles:true}));undefined"
+  )
+  await waitFor(() => evaluate("!!document.querySelector('[data-rescrape-game]')"))
+  const beforeRescrape = downloads.length
+  await evaluate("document.querySelector('[data-rescrape-game]').click()")
+  await waitFor(() =>
+    evaluate(
+      "!document.querySelector('[data-refresh-library]').disabled && [...document.querySelectorAll('[role=status]')].some(el=>el.textContent.includes('Media search completed'))"
+    )
+  )
+  assert(downloads.length > beforeRescrape)
+  assert.notEqual(
+    await evaluate("document.querySelector('[aria-label=Alpha][data-game-card] img').src"),
+    oldCover
+  )
+
+  // Wallpaper-only is an audio boundary, not a persisted change to the user's preview preference.
+  const closePanel = async () => {
+    await evaluate(
+      "document.querySelector('dialog[open]').dispatchEvent(new CustomEvent('controller-input',{detail:{hit:i=>i===1,move:null,axes:[0,0,0,0],now:performance.now()}}))"
+    )
+    await delay(70)
+  }
+  await evaluate("document.querySelector('[data-settings-trigger]').click()")
+  await waitFor(() => evaluate("!!document.querySelector('[data-audio-setting=previewSound]')"))
+  assert.equal(
+    await evaluate(
+      "document.querySelector('[data-audio-setting=previewSound]').getAttribute('aria-checked')"
+    ),
+    'true'
+  )
+  await evaluate("document.querySelector('[data-wallpaper-page]').click()")
+  await waitFor(() => evaluate("!!document.querySelector('[data-wallpaper-only]')"))
+  await evaluate("document.querySelector('[data-wallpaper-only]').click()")
+  await waitFor(() =>
+    evaluate(
+      "document.querySelector('[data-wallpaper-only]').getAttribute('aria-checked') === 'true'"
+    )
+  )
+  await closePanel()
+  assert(await evaluate("document.querySelector('[data-audio-setting=previewSound]').disabled"))
+  assert.equal(
+    await evaluate(
+      "document.querySelector('[data-audio-setting=previewSound]').getAttribute('aria-checked')"
+    ),
+    'true'
+  )
+  await closePanel()
+  await evaluate(
+    "window.mediaEvents=[];document.querySelector('[aria-label=Beta][data-game-card]').focus();document.querySelector('[aria-label=Beta][data-game-card]').dispatchEvent(new FocusEvent('focusin',{bubbles:true}))"
+  )
+  await delay(1250)
+  assert.equal(
+    await evaluate(
+      "window.mediaEvents.filter(e=>e.type==='play' && !e.src?.includes('.wav')).length"
+    ),
+    0
+  )
+  assert.equal(await evaluate("document.querySelector('audio').volume"), 0)
+  assert(await evaluate("!document.querySelector('video.hero-fixed-image').hasAttribute('src')"))
+  await evaluate("document.querySelector('[data-settings-trigger]').click()")
+  await waitFor(() => evaluate("!!document.querySelector('[data-wallpaper-page]')"))
+  await evaluate("document.querySelector('[data-wallpaper-page]').click()")
+  await waitFor(() => evaluate("!!document.querySelector('[data-wallpaper-only]')"))
+  await evaluate("document.querySelector('[data-wallpaper-only]').click()")
+  await waitFor(() =>
+    evaluate(
+      "document.querySelector('[data-wallpaper-only]').getAttribute('aria-checked') === 'false'"
+    )
+  )
+  await closePanel()
+  assert.equal(
+    await evaluate("document.querySelector('[data-audio-setting=previewSound]').disabled"),
+    false
+  )
+  assert.equal(
+    await evaluate(
+      "document.querySelector('[data-audio-setting=previewSound]').getAttribute('aria-checked')"
+    ),
+    'true'
+  )
+  await closePanel()
+  await evaluate(
+    "window.mediaEvents=[];document.querySelector('[aria-label=Alpha][data-game-card]').focus();document.querySelector('[aria-label=Alpha][data-game-card]').dispatchEvent(new FocusEvent('focusin',{bubbles:true}))"
+  )
+  await waitFor(() => evaluate("window.mediaEvents.some(e=>e.type==='play' && e.tag==='AUDIO')"))
 
   // A rejected playback promise is contained, while selection and static artwork remain usable.
   await evaluate(

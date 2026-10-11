@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types -- Internal controlled console keyboard. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import InputHint from './InputHint'
+import InputHint, { KeyBadge } from './InputHint'
 import { useI18n } from '../hooks/i18n'
 
 /**
@@ -119,9 +119,16 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
    */
   const [symbols, setSymbols] = useState(false)
   /**
-   * Bounded [row,column] virtual-key selection; unequal row lengths clamp horizontal position.
+   * [Row,column] selection: rows are bounded, horizontal movement wraps within each row.
    */
   const [position, setPosition] = useState([0, 0])
+  // Controller events can arrive in the same render frame. Keep navigation and A activation
+  // synchronized immediately, while state paints the selected key and roving tab stop.
+  const positionRef = useRef([0, 0])
+  const selectPosition = (next) => {
+    positionRef.current = next
+    setPosition(next)
+  }
   const letters = (symbols ? SYMBOLS : LETTERS[layout]).map(
     /**
      * Project each symbols ? SYMBOLS : LETTERS[layout] entry for letters; preserve input ordering in the derived collection.
@@ -219,7 +226,7 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
          */
         (current) => !current
       )
-      setPosition([3, 0])
+      selectPosition([3, 0])
     } else if (key === 'language') {
       const next = layout === 'tr' ? 'en' : 'tr'
       setLayout(next)
@@ -228,18 +235,18 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
       } catch {
         /* Optional persistence. */
       }
-      setPosition([3, 1])
+      selectPosition([3, 1])
     } else if (key === 'left' || key === 'right') cursor(key === 'left' ? -1 : 1)
     else insert(key === 'space' ? ' ' : key)
   }
   /**
-   * Navigate uneven keyboard rows with bounded row/column indices and focus the resulting key
+   * Wrap horizontally within a row, clamp vertical movement to unequal row lengths, and focus the key
    * without scrolling the dashboard.
    *
    * @param {string} direction - Navigation direction: up, down, left, or right.
    */
   const move = (direction) => {
-    const [row, column] = position
+    const [row, column] = positionRef.current
     const nextRow =
       direction === 'up'
         ? Math.max(0, row - 1)
@@ -248,12 +255,12 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
           : row
     const nextColumn =
       direction === 'left'
-        ? Math.max(0, column - 1)
+        ? (column - 1 + rows[row].length) % rows[row].length
         : direction === 'right'
-          ? Math.min(rows[row].length - 1, column + 1)
+          ? (column + 1) % rows[row].length
           : column
     const next = [nextRow, Math.min(nextColumn, rows[nextRow].length - 1)]
-    setPosition(next)
+    selectPosition(next)
     dialogRef.current
       ?.querySelector(`[data-osk-key="${next.join('-')}"]`)
       ?.focus({ preventScroll: true })
@@ -265,7 +272,7 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
   useEffect(() => {
     const dialog = dialogRef.current
     /**
-     * Consume OSK-only navigation, A insertion, X deletion, and B/Menu dismissal.
+     * Consume OSK-only navigation, A insertion, X deletion, Y space, LT clear and R2/Menu completion.
      *
      * @param {Object} options - Named inputs for this operation.
      * @param {Object} options.detail - Named inputs for this operation.
@@ -273,13 +280,15 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
      * @param {string} options.detail.move - Throttled navigation direction, or null on frames without movement.
      */
     const handleController = ({ detail: { hit, move: direction } }) => {
-      if (hit(1) || hit(9)) {
+      if (hit(1) || hit(9) || hit(7)) {
         onClose()
         return
       }
-      if (direction) move(direction)
-      else if (hit(2)) erase()
-      else if (hit(0)) type(rows[position[0]][position[1]])
+      if (hit(2)) erase()
+      else if (hit(3)) insert(' ')
+      else if (hit(6)) type('clear')
+      else if (direction) move(direction)
+      else if (hit(0)) type(rows[positionRef.current[0]][positionRef.current[1]])
     }
     dialog.addEventListener('controller-input', handleController)
     /**
@@ -347,6 +356,9 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
           } else if (event.key === 'Backspace') {
             event.preventDefault()
             erase()
+          } else if (event.key === 'Delete') {
+            event.preventDefault()
+            type('clear')
           } else if (
             event.key.length === 1 &&
             event.key !== ' ' &&
@@ -418,7 +430,7 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
           </div>
         )}
       </div>
-      <div className="space-y-2">
+      <div className="osk-keys">
         {rows.map(
           /**
            * Project each rows entry for OnScreenKeyboard; preserve input ordering in the derived collection.
@@ -455,13 +467,16 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
                       /**
                        * Handle onFocus on this OnScreenKeyboard control using the current render's values; delegate state/IPC work to its owning component.
                        */
-                      () => setPosition([rowIndex, column])
+                      () => selectPosition([rowIndex, column])
                     }
                     onClick={
                       /**
                        * Handle onClick on this OnScreenKeyboard control using the current render's values; delegate state/IPC work to its owning component.
                        */
-                      () => type(key)
+                      () => {
+                        selectPosition([rowIndex, column])
+                        type(key)
+                      }
                     }
                     className={
                       'osk-key ' +
@@ -470,10 +485,18 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
                     }
                   >
                     {key === 'erase' ? (
-                      <BackspaceIcon />
+                      <>
+                        <BackspaceIcon />
+                        <span className="osk-shortcut">
+                          <KeyBadge keyboard="⌫" gamepad="X" />
+                        </span>
+                      </>
                     ) : key === 'done' ? (
                       <>
                         <SearchIcon />
+                        <span className="osk-shortcut">
+                          <KeyBadge keyboard="Enter" gamepad="R2" />
+                        </span>
                         <span>
                           {t('searchAction')} / {t('done')}
                         </span>
@@ -506,7 +529,17 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
                     ) : key === 'right' ? (
                       '→'
                     ) : (
-                      label(key)
+                      <>
+                        {label(key)}
+                        {['space', 'clear'].includes(key) && (
+                          <span className="osk-shortcut">
+                            <KeyBadge
+                              keyboard={key === 'space' ? 'Space' : 'Del'}
+                              gamepad={key === 'space' ? 'Y' : 'LT'}
+                            />
+                          </span>
+                        )}
+                      </>
                     )}
                   </button>
                 )
@@ -525,7 +558,10 @@ export default function OnScreenKeyboard({ value, onChange, onClose }) {
         <InputHint keyboard="⌫" gamepad="X">
           {t('erase')}
         </InputHint>
-        <InputHint keyboard="Esc" gamepad="Menu">
+        <InputHint keyboard="Space" gamepad="Y">
+          {t('space')}
+        </InputHint>
+        <InputHint keyboard="Enter" gamepad="R2 / Menu">
           {t('done')}
         </InputHint>
       </footer>

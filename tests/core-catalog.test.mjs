@@ -4,8 +4,93 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { join } from 'node:path'
 import { createCoreCatalog, biosPlatformForCore } from '../src/main/services/coreCatalog.js'
-import { createCoreManager } from '../src/main/services/coreManager.js'
+import { createCoreManager, CORE_UPDATE_INTERVAL_MS } from '../src/main/services/coreManager.js'
 import { coreArchive, coreBinary } from './fixtures/core-archive.cjs'
+
+test('core cooldown persists across managers, expires after 24h and never masks missing or replaced files', async (t) => {
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'zenith-core-cooldown-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const name = 'mgba_libretro.dll',
+    target = join(root, 'cores', name)
+  let clock = 100000,
+    requests = 0,
+    fail = false
+  const events = []
+  const options = {
+    retroarchDir: root,
+    platform: 'win32',
+    arch: 'x64',
+    now: () => clock,
+    onProgress: (event) => events.push(event),
+    fetchImpl: async () => {
+      requests++
+      return fail ? new Response('', { status: 503 }) : new Response(coreArchive(name))
+    }
+  }
+  await createCoreManager(options).installNamed(name)
+  assert.equal(requests, 1)
+  events.length = 0
+  clock += CORE_UPDATE_INTERVAL_MS - 1
+  assert.equal((await createCoreManager(options).installNamed(name, true)).upToDate, true)
+  assert.equal(requests, 1)
+  assert.deepEqual(events, [])
+  clock++
+  const receipt = target + '.zenith-update.json'
+  const previous = fs.readFileSync(receipt, 'utf8')
+  fail = true
+  assert.equal((await createCoreManager(options).installNamed(name, true)).success, false)
+  assert.equal(fs.readFileSync(receipt, 'utf8'), previous)
+  fail = false
+  assert.equal((await createCoreManager(options).installNamed(name, true)).success, true)
+  assert.equal(requests, 3)
+  fs.unlinkSync(target)
+  await createCoreManager(options).installNamed(name, true)
+  assert.equal(requests, 4)
+  fs.appendFileSync(target, 'locally changed')
+  await createCoreManager(options).installNamed(name, true)
+  assert.equal(requests, 5)
+  fs.writeFileSync(receipt, 'invalid')
+  await createCoreManager(options).installNamed(name, true)
+  assert.equal(requests, 6)
+})
+
+test('installed core update fetches new bytes, reports progress and preserves saves/config', async (t) => {
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'zenith-core-update-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(join(root, 'cores'))
+  const name = 'mgba_libretro.dll',
+    target = join(root, 'cores', name)
+  fs.writeFileSync(target, coreBinary(name))
+  fs.writeFileSync(join(root, 'retroarch.cfg'), 'user configuration')
+  fs.mkdirSync(join(root, 'saves'))
+  fs.writeFileSync(join(root, 'saves', 'demo.srm'), 'save')
+  const events = []
+  let requests = 0
+  const manager = createCoreManager({
+    retroarchDir: root,
+    platform: 'win32',
+    arch: 'x64',
+    onProgress: (e) => events.push(e),
+    fetchImpl: async () => {
+      requests++
+      const archive = coreArchive(name)
+      return new Response(archive, { headers: { 'content-length': String(archive.length) } })
+    }
+  })
+  assert.equal((await manager.installNamed(name)).success, true)
+  assert.equal(requests, 0)
+  const task = manager.installNamed(name, true)
+  assert.equal(manager.busy(), true)
+  assert.equal((await task).success, true)
+  assert.equal(manager.busy(), false)
+  assert.equal(requests, 1)
+  assert(events.some((e) => e.received > 0 && e.total > 0))
+  assert.equal(events.at(-1).status, 'completed')
+  assert.deepEqual(fs.readFileSync(target), coreBinary(name))
+  assert.equal(fs.readFileSync(join(root, 'retroarch.cfg'), 'utf8'), 'user configuration')
+  assert.equal(fs.readFileSync(join(root, 'saves', 'demo.srm'), 'utf8'), 'save')
+  assert(!fs.readdirSync(join(root, 'cores')).some((n) => /part|backup/.test(n)))
+})
 test('official catalog filters foreign paths, sorts aliases, caches offline and persists selection', async (t) => {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'zenith-catalog-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

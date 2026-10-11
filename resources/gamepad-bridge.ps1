@@ -22,6 +22,30 @@ public static class ZenithPad {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  public static void HoldMask(long handle, int pid) {
+    uint owner; var h = new IntPtr(handle);
+    if (handle != 0 && GetWindowThreadProcessId(h, out owner) != 0 && owner == (uint)pid)
+      SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0013); // TOPMOST, no move/size/activate
+  }
+  delegate bool EnumProc(IntPtr h, IntPtr parameter);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder text, int capacity);
+  // Compilation dialogs and the zero-FPS initial surface never satisfy readiness.
+  public static bool RenderReady(int pid) {
+    bool ready = false;
+    EnumWindows((h, p) => {
+      uint owner; GetWindowThreadProcessId(h, out owner);
+      if (owner != (uint)pid || !IsWindowVisible(h)) return true;
+      var title = new System.Text.StringBuilder(2048); GetWindowText(h, title, title.Capacity);
+      var match = System.Text.RegularExpressions.Regex.Match(title.ToString(), @"^FPS:\s*([0-9]+(?:[.,][0-9]+)?)\s*\|");
+      double fps;
+      if (match.Success && double.TryParse(match.Groups[1].Value.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out fps) && fps > 0) ready = true;
+      return !ready;
+    }, IntPtr.Zero);
+    return ready;
+  }
   // Only activate the exact Zenith HWND supplied by Main; never foreground an arbitrary process.
   public static bool FocusZenith(long handle, int pid) {
     var window = new IntPtr(handle);
@@ -39,6 +63,10 @@ $keyCodes = @()
 $zenithWindow = 0L
 $zenithPid = 0
 $overlayOpen = $false
+$watchReady = $false
+$readySent = $false
+$lastReadyCheck = -1000L
+$readySamples = 0
 $focusAttempts = 0
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $lastEmulatorForeground = -10000L
@@ -52,6 +80,7 @@ while ($true) {
     if ($command.StartsWith('{')) {
       try {
         $config = $command | ConvertFrom-Json
+        $watchReady = [bool]$config.watchReady
         $padKeys = @($config.pad); $keyCodes = @($config.keys)
         $zenithWindow = [long]$config.zenithWindow; $zenithPid = [int]$config.zenithPid
       } catch { }
@@ -71,6 +100,19 @@ while ($true) {
 
   }
   $emulatorForeground = [ZenithPad]::IsForeground($EmulatorPid)
+  if ($watchReady -and -not $readySent -and ($clock.ElapsedMilliseconds - $lastReadyCheck -ge 250)) {
+    $lastReadyCheck = $clock.ElapsedMilliseconds
+    [ZenithPad]::HoldMask($zenithWindow, $zenithPid)
+    if ($emulatorForeground) { [void][ZenithPad]::FocusZenith($zenithWindow, $zenithPid) }
+    if ([ZenithPad]::RenderReady($EmulatorPid)) {
+      $readySamples++
+    } else { $readySamples = 0 }
+    if ($readySamples -ge 3) {
+      $readySent = $true
+      [Console]::WriteLine('ready')
+      [Console]::Out.Flush()
+    }
+  }
   if ($emulatorForeground) { $lastEmulatorForeground = $clock.ElapsedMilliseconds }
   $down = $false
   for ($slot=0; $slot -lt 4; $slot++) {

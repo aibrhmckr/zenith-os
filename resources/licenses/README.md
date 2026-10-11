@@ -15,3 +15,9 @@ and fulfill applicable source-distribution obligations for the exact helper they
 ship; a source link alone is not a substitute for those obligations. Revalidate
 the binary version and notices whenever updating 7zip-bin. RPCS3, firmware and
 game/license inputs are not part of this bundled helper.
+
+Full ISO/UDF extraction uses unmodified 7-Zip 26.03 via 7zip-bin-full 26.3.1.
+The wrapper license is 7zip-bin-full-MIT.txt; upstream binary notices are
+7zip-26.03.txt and LGPL-2.1.txt. Source: https://github.com/ip7z/7zip/tree/26.03
+Wrapper/build scripts: https://github.com/ollm/7zip-bin-full
+Release maintainers must provide corresponding source under the upstream terms.

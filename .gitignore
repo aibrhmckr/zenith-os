@@ -6,6 +6,7 @@ dist/
 out/
 build/
 .eslintcache
+wallpapers/
 .DS_Store
 Thumbs.db
 desktop.ini
@@ -247,11 +248,12 @@ trailers/**
 *.[aA][pP][pP][iI][mM][aA][gG][eE]
 *.[dD][eE][bB]
 
-# Explicitly supplied application UI sounds (runtime media stays ignored).
+# Original generated application UI sounds (runtime media stays ignored).
 !src/renderer/src/assets/sounds/
 !src/renderer/src/assets/sounds/navigate.wav
 !src/renderer/src/assets/sounds/toggle.wav
 !src/renderer/src/assets/sounds/launch.wav
+!src/renderer/src/assets/sounds/back.wav
 
 # Imported emulator installations, firmware and extra cartridge/disk formats.
 emulators/*
@@ -367,3 +369,27 @@ emulators/retroarch/*
 !emulators/retroarch/cores/
 emulators/retroarch/cores/*
 !emulators/retroarch/cores/.gitkeep
+
+# ========================================================
+# 8. EDİTÖR, TEST ARTIKLARI VE BOZUK ARŞİV KLASÖRLERİ
+# ========================================================
+.vscode/
+.idea/
+*-preview.png
+*-test.log
+build/win-unpacked/
+release/
+*祖*
+*搝*
+
+# ========================================================
+# 9. MEŞRU UYGULAMA İKONLARI VE SESLERİ (WHITELIST)
+# (Yukarıdaki küresel *.png, *.ico kurallarının uygulama ikonlarını silmesini engeller)
+# ========================================================
+!build/icon.*
+!build/icons/**
+!resources/icon.*
+!resources/*.png
+!resources/*.ico
+!resources/*.icns
+!src/renderer/src/assets/**

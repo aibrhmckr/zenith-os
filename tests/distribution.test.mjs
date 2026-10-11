@@ -105,5 +105,19 @@ test('packaging excludes PS3 inputs and runtimes while retaining extractor notic
   }
   assert(config.files.includes('resources/licenses/**'))
   assert(config.asarUnpack.includes('node_modules/7zip-bin/**'))
+  assert(config.asarUnpack.includes('node_modules/7zip-bin-full/**'))
+  // Exercise builder's ordered filter implementation: utility DLL must survive without
+  // weakening ROM/core exclusions elsewhere in the application or RetroArch resources.
+  const { createFilter } = require('app-builder-lib/out/util/filter.js')
+  const { Minimatch } = require('minimatch')
+  const root = path.resolve('.')
+  const filter = createFilter(
+    root,
+    config.files.map((pattern) => new Minimatch(pattern, { dot: true }))
+  )
+  const stat = { isDirectory: () => false }
+  assert(filter(path.join(root, 'node_modules/7zip-bin-full/win/x64/7z.dll'), stat))
+  assert(!filter(path.join(root, 'out/pcsx2_libretro.dll'), stat))
+  assert(!filter(path.join(root, 'out/PS3UPDAT.PUP'), stat))
   assert(!config.extraResources.some((entry) => /rpcs3/i.test(entry.from)))
 })

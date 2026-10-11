@@ -7,6 +7,7 @@ const fs = require('node:fs'),
   os = require('node:os'),
   path = require('node:path')
 const { coreArchive } = require('./fixtures/core-archive.cjs')
+const { discImage } = require('./fixtures/disc-image.cjs')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-console-ui-'))
 const profile = path.join(root, 'profile'),
   retroarch = path.join(root, 'emulators', 'retroarch')
@@ -16,6 +17,8 @@ fs.writeFileSync(path.join(retroarch, 'retroarch.exe'), '')
 const rom = path.join(root, 'Imported Game.gba')
 fs.writeFileSync(rom, 'synthetic game')
 app.getAppPath = () => root
+const originalGetPath = app.getPath.bind(app)
+app.getPath = (name) => (name === 'home' ? root : originalGetPath(name))
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
 const actions = []
@@ -96,15 +99,41 @@ async function run(window) {
     )
     await delay(50)
   }
-  await evaluate(`window.sfxEvents=[]; window.sfxVoices=[]; window.Audio=class {
-    constructor(src){this.src=src;this.id=window.sfxVoices.push(this)} currentTime=0; volume=0; paused=true;
-    play(){this.paused=false;window.sfxEvents.push(this.id);return Promise.resolve()} pause(){this.paused=true} removeAttribute(){} load(){}
-  };undefined`)
+  await evaluate(`window.sfxEvents=[]; window.sfxVoices=[];
+    const originalPlay=HTMLMediaElement.prototype.play,originalPause=HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.play=function(){
+      if(!this.src.includes('.wav')) return originalPlay.call(this);
+      if(!this.sfxId){this.sfxId=window.sfxVoices.push(this);Object.defineProperty(this,'paused',{get:()=>this.sfxPaused})}
+      this.sfxPaused=false;window.sfxEvents.push(this.sfxId);return Promise.resolve()
+    };
+    HTMLMediaElement.prototype.pause=function(){if(this.src.includes('.wav'))this.sfxPaused=true;originalPause.call(this)};
+    undefined`)
   await delay(120)
   await wait("!document.querySelector('[data-add-game]').disabled")
   assert(await evaluate("document.documentElement.lang==='en'"))
   selection = { canceled: false, filePaths: [rom] }
   await click('[data-add-game]')
+  await wait("!!document.querySelector('[data-file-entry]')")
+  assert.equal(await evaluate('document.activeElement.dataset.fileName'), 'emulators')
+  assert(
+    await evaluate(
+      "document.querySelector('[data-console-modal=fileBrowser]').getBoundingClientRect().height===innerHeight"
+    )
+  )
+  await wait('!!document.querySelector(\'[data-file-name="Imported Game.gba"]\')')
+  // Enter a folder and B returns to its parent without dismissing the picker.
+  await pad(0)
+  await wait('!!document.querySelector(\'[data-file-name="retroarch"]\')')
+  await pad(1)
+  await wait('!!document.querySelector(\'[data-file-name="Imported Game.gba"]\')')
+  for (
+    let i = 0;
+    i < 10 && (await evaluate('document.activeElement.dataset.fileName')) !== 'Imported Game.gba';
+    i++
+  )
+    await pad(-1, 'down')
+  assert.equal(await evaluate('document.activeElement.dataset.fileName'), 'Imported Game.gba')
+  await pad(2)
   await wait(
     "document.querySelectorAll('[data-game-card]').length===1 && !document.querySelector('[data-refresh-library]').disabled"
   )
@@ -124,7 +153,9 @@ async function run(window) {
   const filterRoms = ['A.iso', 'B.nes', 'C.sfc', 'D.nds'].map((name) =>
     path.join(root, 'games', name)
   )
-  filterRoms.forEach((file) => fs.writeFileSync(file, 'synthetic fixture'))
+  filterRoms.forEach((file) =>
+    fs.writeFileSync(file, file.endsWith('.iso') ? discImage('PS2') : 'synthetic fixture')
+  )
   await click('[data-refresh-library]')
   await wait(
     "document.querySelectorAll('[data-game-card]').length===5 && !document.querySelector('[data-refresh-library]').disabled"
@@ -133,26 +164,39 @@ async function run(window) {
   await wait("!!document.querySelector('[data-console-modal=filter][open]')")
   assert.deepEqual(
     await evaluate(
-      "Array.from(document.querySelectorAll('#console-filters button')).map(el=>el.textContent)"
+      "Array.from(document.querySelectorAll('#console-filters .console-filter-name')).map(el=>el.textContent)"
     ),
     ['All consoles', 'PS2', 'NDS', 'GBA', 'SNES', 'NES']
   )
-  assert.equal(await evaluate('document.activeElement.textContent'), 'All consoles')
+  assert.equal(await evaluate('document.activeElement.dataset.consoleFilter'), 'ALL')
+  assert.deepEqual(
+    await evaluate(
+      "[...document.querySelectorAll('#console-filters [data-game-count]')].map(el=>Number(el.dataset.gameCount))"
+    ),
+    [5, 1, 1, 1, 1, 1]
+  )
+  assert.equal(await evaluate("document.querySelectorAll('#console-filters svg').length"), 6)
+  assert.equal(
+    await evaluate(
+      "document.querySelector('[data-console-filter=ALL]').getAttribute('aria-pressed')"
+    ),
+    'true'
+  )
   await evaluate('document.activeElement.blur();undefined')
   await pad(-1)
   assert.equal(
-    await evaluate('document.activeElement.textContent'),
-    'All consoles',
+    await evaluate('document.activeElement.dataset.consoleFilter'),
+    'ALL',
     'Filter repairs lost DOM focus'
   )
   await pad(-1, 'right')
-  assert.equal(await evaluate('document.activeElement.textContent'), 'PS2')
+  assert.equal(await evaluate('document.activeElement.dataset.consoleFilter'), 'PS2')
   await pad(-1, 'down')
-  assert.equal(await evaluate('document.activeElement.textContent'), 'SNES')
+  assert.equal(await evaluate('document.activeElement.dataset.consoleFilter'), 'SNES')
   await pad(-1, 'left')
-  assert.equal(await evaluate('document.activeElement.textContent'), 'GBA')
+  assert.equal(await evaluate('document.activeElement.dataset.consoleFilter'), 'GBA')
   await pad(-1, 'up')
-  assert.equal(await evaluate('document.activeElement.textContent'), 'All consoles')
+  assert.equal(await evaluate('document.activeElement.dataset.consoleFilter'), 'ALL')
   await pad(1)
   await wait("!document.querySelector('dialog[open]')")
   filterRoms.forEach((file) => fs.unlinkSync(file))
@@ -207,66 +251,69 @@ async function run(window) {
         if (await preview.webContents.executeJavaScript(code)) return
         await delay(30)
       }
-      throw Error('Preview timeout: ' + code)
+      throw Error(
+        'Preview timeout: ' +
+          code +
+          ' STATE: ' +
+          (await preview.webContents.executeJavaScript(
+            "JSON.stringify({selected:document.querySelector('[data-game-card][aria-pressed=true]')?.getAttribute('aria-label'), active:document.activeElement?.outerHTML.slice(0,150),dialogs:[...document.querySelectorAll('dialog[open]')].map(d=>d.dataset),count:document.querySelectorAll('[data-game-card]').length})"
+          ))
+      )
     }
-    preview.setSize(1920, 1080)
-    await previewWait("Number(document.querySelector('.dashboard-library').dataset.columns)===11")
+    for (const [width, height] of [
+      [1920, 1080],
+      [1024, 768],
+      [1280, 800]
+    ]) {
+      preview.setSize(width, height)
+      await previewWait('window.innerWidth===' + width)
+      await delay(100)
+      const layout = await preview.webContents.executeJavaScript(`(() => {
+        const grid=document.querySelector('.poster-grid'), cards=[...grid.children];
+        return {columns:Number(document.querySelector('[data-columns]').dataset.columns),widths:cards.map(c=>c.offsetWidth),heights:cards.map(c=>c.offsetHeight),gap:getComputedStyle(grid).gap,tops:cards.map(c=>c.offsetTop),step:cards[1].offsetLeft-cards[0].offsetLeft}
+      })()`)
+      assert(layout.widths.every((w) => w === 144))
+      assert(layout.heights.every((h) => h === 216))
+      assert.equal(layout.columns, width === 1920 ? 11 : width === 1024 ? 5 : 7)
+      assert.equal(layout.gap, '16px')
+      assert.equal(layout.step, 160)
+      assert.equal(layout.tops[layout.columns] - layout.tops[0], 232)
+      await preview.webContents.executeJavaScript(
+        "document.querySelector('[data-game-card]').click();undefined"
+      )
+      await previewWait("document.querySelector('[data-expanded]').dataset.expanded==='false'")
+      await preview.webContents.executeJavaScript(
+        "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));undefined"
+      )
+      await previewWait("document.querySelector('[data-expanded]').dataset.expanded==='true'")
+      await previewWait(
+        "document.querySelectorAll('[data-game-card]')[" +
+          layout.columns +
+          "].getAttribute('aria-pressed')==='true'"
+      )
+      await delay(350)
+      assert(
+        await preview.webContents.executeJavaScript(
+          "document.querySelector('.poster-grid').clientHeight>=464"
+        )
+      )
+      fs.writeFileSync(
+        path.join(root, 'two-row-' + width + '.png'),
+        (await preview.webContents.capturePage()).toPNG()
+      )
+      await preview.webContents.executeJavaScript(
+        "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}));undefined"
+      )
+      await previewWait("document.querySelector('[data-expanded]').dataset.expanded==='false'")
+    }
     await preview.webContents.executeJavaScript(
-      "document.querySelector('.zenith-shell').style.background='#e2e5db';undefined"
-    )
-    const layout = await preview.webContents.executeJavaScript(`(() => {
-      const grid=document.querySelector('.poster-grid'), cards=[...grid.children], rect=grid.getBoundingClientRect();
-      return { widths:cards.map(c=>c.offsetWidth), height:cards[0].offsetHeight, gap:getComputedStyle(grid).columnGap, justify:getComputedStyle(grid).justifyContent, step:cards[1].offsetLeft-cards[0].offsetLeft, rowStep:cards[11].offsetTop-cards[0].offsetTop, visibleRows:rect.height, left:rect.left }
-    })()`)
-    assert(layout.widths.every((width) => width === 144))
-    assert.equal(layout.height, 216)
-    assert.equal(layout.gap, '16px')
-    assert.equal(layout.justify, 'start')
-    assert.equal(layout.step, 160)
-    assert.equal(layout.rowStep, 232)
-    assert(layout.visibleRows <= 260, 'First row uses a single-row showcase')
-    assert.equal(layout.left, 48)
-    await preview.webContents.executeJavaScript(
-      "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));undefined"
-    )
-    await previewWait("document.querySelector('.dashboard-library').dataset.expanded==='true'")
-    await delay(400)
-    const expanded = await preview.webContents.executeJavaScript(
-      "JSON.stringify({height:document.querySelector('.poster-grid').getBoundingClientRect().height, library:document.querySelector('.dashboard-library').outerHTML.slice(0,170),columns:getComputedStyle(document.querySelector('.poster-grid')).gridTemplateColumns,selected:document.querySelector('[aria-pressed=true]')?.getAttribute('aria-label')})"
-    )
-    assert(JSON.parse(expanded).height >= 464, expanded)
-    fs.writeFileSync(
-      path.join(root, 'dashboard-1920-contrast.png'),
-      (await preview.webContents.capturePage()).toPNG()
-    )
-    await preview.webContents.executeJavaScript(
-      "document.querySelector('.zenith-shell').style.background='';undefined"
-    )
-    preview.setSize(1024, 768)
-    await previewWait("Number(document.querySelector('.dashboard-library').dataset.columns)===5")
-    await preview.webContents.executeJavaScript(
-      "document.querySelector('[data-game-card]').click();undefined"
-    )
-    await previewWait(
-      "document.querySelectorAll('[data-game-card]')[0].getAttribute('aria-pressed')==='true'"
-    )
-    await delay(80)
-    await preview.webContents.executeJavaScript(
-      "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));undefined"
-    )
-    await previewWait(
-      "document.querySelectorAll('[data-game-card]')[5].getAttribute('aria-pressed')==='true'"
-    )
-    preview.setSize(1280, 800)
-    await previewWait("Number(document.querySelector('.dashboard-library').dataset.columns)===7")
-    await preview.webContents.executeJavaScript(
-      'window.previewPad.buttons[16].pressed=false;window.previewPad.buttons[2].pressed=true;undefined'
+      'window.previewPad.buttons[16].pressed=false;window.previewPad.buttons[3].pressed=true;undefined'
     )
     await previewWait("!!document.querySelector('[data-osk][open]')")
     await delay(350)
     fs.writeFileSync(path.join(root, 'osk.png'), (await preview.webContents.capturePage()).toPNG())
     await preview.webContents.executeJavaScript(
-      'window.previewPad.buttons[2].pressed=false;window.previewPad.buttons[1].pressed=true;undefined'
+      'window.previewPad.buttons[3].pressed=false;window.previewPad.buttons[1].pressed=true;undefined'
     )
     await previewWait("!document.querySelector('[data-osk]')")
     await preview.webContents.executeJavaScript(
@@ -315,6 +362,18 @@ async function run(window) {
   await pad(0)
   await wait("document.documentElement.lang==='en'")
   assert((await evaluate('window.sfxEvents.length')) > 0, 'Dropdown and focus use WAV sounds')
+  for (let step = 0; step < 3; step++) await pad(-1, 'down')
+  assert.equal(await evaluate('document.activeElement.dataset.mediaSetting'), 'downloadCovers')
+  await pad(0)
+  await wait(
+    "document.querySelector('[data-media-setting=downloadCovers]').getAttribute('aria-checked')==='false' && !document.querySelector('[data-media-setting=downloadCovers]').disabled"
+  )
+  await pad(-1, 'down')
+  assert.equal(await evaluate('document.activeElement.dataset.mediaSetting'), 'downloadBackgrounds')
+  await pad(0)
+  await wait(
+    "document.querySelector('[data-media-setting=downloadBackgrounds]').getAttribute('aria-checked')==='false' && !document.querySelector('[data-media-setting=downloadBackgrounds]').disabled"
+  )
   await click('[data-system-page]')
   await wait("!!document.querySelector('[data-console-modal=systems][open]')")
   assert.equal((await evaluate('window.electronAPI.getSystemStatus()')).length, 1)
@@ -322,18 +381,20 @@ async function run(window) {
   await pad(1)
   await wait("!!document.querySelector('[data-console-modal=settings][open]')")
   await evaluate('window.sfxVoices.forEach(voice=>voice.pause());window.sfxEvents=[];undefined')
-  for (let i = 0; i < 4; i++) {
-    await evaluate(
-      "window.dispatchEvent(new CustomEvent('zenith-sound',{detail:'navigate'}));undefined"
-    )
-    await delay(45)
-  }
+  await evaluate(
+    "for(let i=0;i<24;i++)window.dispatchEvent(new CustomEvent('zenith-sound',{detail:'navigate'}));undefined"
+  )
+  assert.equal(
+    await evaluate('window.sfxEvents.length'),
+    24,
+    'No throttling or saturation drops in a same-tick burst'
+  )
   assert.equal(
     await evaluate('new Set(window.sfxEvents).size'),
-    4,
-    'Rapid navigation uses four overlapping voices'
+    6,
+    'Rapid navigation uses six overlapping voices'
   )
-  assert.equal(await evaluate('window.sfxVoices.filter(voice=>!voice.paused).length'), 4)
+  assert.equal(await evaluate('window.sfxVoices.filter(voice=>!voice.paused).length'), 6)
   await click('[data-audio-setting=menuSounds]')
   await wait(
     "document.querySelector('[data-audio-setting=menuSounds]').getAttribute('aria-checked')==='false'"
@@ -451,6 +512,47 @@ async function run(window) {
   assert.equal(records[game.gameId], undefined)
   assert.equal((await evaluate('window.electronAPI.getLocalGames()')).length, 0)
   assert(requests.some((url) => url.includes('buildbot.libretro.com')))
+  const tasks = await evaluate('window.electronAPI.getDownloads()')
+  assert(
+    tasks.some(
+      (task) =>
+        task.id === 'core:mgba_libretro.dll' && task.status === 'completed' && task.percent === 100
+    )
+  )
+  await key('d')
+  await wait("!!document.querySelector('[data-console-modal=downloads][open]')")
+  await wait("document.activeElement.hasAttribute('data-initial-focus')")
+  const coreDownloadCount = requests.filter((url) => url.endsWith('.dll.zip')).length
+  assert.equal((await evaluate('window.electronAPI.updateEmulators()')).success, true)
+  await wait(
+    "document.querySelector('[data-download-task=emulators-update]')?.textContent.includes('All emulators and cores are up to date')"
+  )
+  assert.equal(requests.filter((url) => url.endsWith('.dll.zip')).length, coreDownloadCount)
+  assert(
+    !(await evaluate(
+      'window.electronAPI.getDownloads().then(tasks=>tasks.some(t=>t.status === "active"))'
+    ))
+  )
+  // Completed history stays in Main for diagnostics but old rows are no longer shown in the panel.
+  const coreTask = tasks.find((task) => task.id === 'core:mgba_libretro.dll')
+  if (Date.now() - coreTask.updatedAt >= 4350)
+    assert(
+      !(await evaluate(
+        '!!document.querySelector(\'[data-download-task="core:mgba_libretro.dll"]\')'
+      ))
+    )
+  await pad(-1, 'down')
+  assert(await evaluate("document.activeElement.closest('[data-console-modal=downloads]')!==null"))
+  await pad(1)
+  await wait("!document.querySelector('dialog[open]')")
+  await evaluate(
+    "Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[{connected:true,index:0,id:'Download controller',axes:[0,0,0,0],buttons:Array.from({length:17},(_,i)=>({pressed:i===7,value:i===7?1:0}))}]});undefined"
+  )
+  await wait("!!document.querySelector('[data-console-modal=downloads][open]')")
+  await evaluate(
+    "Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[]});undefined"
+  )
+  await pad(1)
   console.log(
     'PASS: English/TR gamepad dropdown, custom WAV mute and persisted audio preferences, add game, poster layout, 500ms launch fade, core install/retry, detached session hide/resume/stop, confirmed cache/save deletion and physical ROM deletion'
   )

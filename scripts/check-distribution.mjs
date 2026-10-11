@@ -9,7 +9,7 @@ const assets = new Set([
   'resources/icon.png',
   'src/renderer/src/assets/electron.svg',
   'src/renderer/src/assets/wavy-lines.svg',
-  ...['navigate', 'toggle', 'launch'].map((n) => 'src/renderer/src/assets/sounds/' + n + '.wav')
+  ...['navigate', 'toggle', 'back', 'launch'].map((n) => 'src/renderer/src/assets/sounds/' + n + '.wav')
 ])
 const files = git('ls-files', '-z').toString().split('\0').filter(Boolean)
 const placeholders = new Set(['emulators/retroarch/.gitkeep', 'emulators/retroarch/cores/.gitkeep'])

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 
 /**
  * Own delayed preview playback and audio ramps for the selected game. Debounce 800 ms, fade in
@@ -7,8 +7,9 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
  * @param {Object} game - Library game record, including identity, platform, and available local media.
  * @param {boolean} enabled - Whether this hook may play previews or menu effects, as described above.
  * @param {boolean} sound - Enable preview audio or focus-change feedback; visual playback remains independently gated.
+ * @param {boolean} hardMute - Immediately mute current/new media and departing fade tails in wallpaper-only mode.
  */
-export default function useMediaPreview(game, enabled, sound = false) {
+export default function useMediaPreview(game, enabled, sound = false, hardMute = false) {
   /**
    * Video element for the selected game; source changes remount it in App.
    */
@@ -55,6 +56,23 @@ export default function useMediaPreview(game, enabled, sound = false) {
   const id = game?.gameId
   const musicUrl = game?.musicUrl
   const videoUrl = game?.videoUrl
+  // Wallpaper-only mode is a hard audio boundary, including departing 150-ms fade tails.
+  useLayoutEffect(() => {
+    if (!hardMute) return
+    stopRef.current()
+    for (const [media, timer] of tails.current) {
+      clearInterval(timer)
+      media.pause()
+      media.volume = 0
+    }
+    tails.current.clear()
+    for (const media of [audioRef.current, videoRef.current]) {
+      if (!media) continue
+      media.pause()
+      media.volume = 0
+      media.muted = true
+    }
+  }, [hardMute, id, musicUrl, videoUrl])
   /**
    * Memoized identity ties playback to game URLs, preference, visibility, and explicit restart
    * intent.

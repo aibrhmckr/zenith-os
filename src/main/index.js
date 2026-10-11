@@ -1,3 +1,6 @@
+import { stopForRestart } from './services/restartSession'
+import { createFileBrowser } from './services/fileBrowser'
+import { createPreferences, mediaPreferences } from './services/preferences'
 import { app, shell, BrowserWindow, ipcMain, protocol, net, dialog, globalShortcut } from 'electron'
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
@@ -5,15 +8,15 @@ import { basename, dirname, extname, join, parse, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { CONSOLE_EXTENSIONS, GAME_FILE_FILTERS } from '../shared/consoles'
+import { CONSOLE_EXTENSIONS } from '../shared/consoles'
 import { createScraper } from './services/scraper'
-import { mediaUrl, serveMedia, revokeMediaDirectory } from './services/local-media'
+import { mediaUrl, gameLogoUrl, serveMedia, revokeMediaDirectory } from './services/local-media'
 import { createGuideService } from './services/guideService'
 import { downloadRpcs3 } from './services/rpcs3Download'
 import { installRpcs3Content } from './services/rpcs3Content'
 import { scanRpcs3Games, isRpcs3ManagedPath } from './services/rpcs3Library'
 import { createRpcs3Runtime } from './services/rpcs3Runtime'
-import { createCoreManager } from './services/coreManager'
+import { createCoreManager, coreFilesFor } from './services/coreManager'
 import { createLibraryStore } from './services/libraryStore'
 import { biosDirectory, biosStatus, deleteBios } from './services/biosStatus'
 import { gameMediaDirectory } from './services/mediaPaths'
@@ -23,6 +26,39 @@ import { createGameImporter } from './services/gameImporter'
 import { normalizeHotkeys } from '../shared/hotkeys'
 import { runtimePaths, pathKey } from './services/platform'
 import { seedBundledRetroArch } from './services/bundledRuntime'
+import { createDownloadCenter } from './services/downloadCenter'
+import { createApplicationUpdater } from './services/applicationUpdater'
+import { updateInstalledEmulators } from './services/emulatorUpdates'
+import { createSoftwareUpdates } from './services/softwareUpdates'
+import { createWallpaperManager } from './services/wallpapers'
+
+// Vite serves changing modules over HTTP. Bypass Chromium's persistent HTTP
+// cache before the first session is created so stale/corrupt development cache
+// entries cannot replace the document or modules. Keep preferences and media.
+// Packaged/file-based launches retain their normal cache behavior.
+if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+  app.commandLine.appendSwitch('disable-http-cache')
+}
+
+const downloads = createDownloadCenter({
+  userData: app.getPath('userData'),
+  publish: (tasks) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('downloads:progress', tasks)
+  }
+})
+let applicationUpdater = null
+let updateTimer = null
+let emulatorUpdate = null
+let softwareUpdates = null
+/** Individual maintenance writes feed the Settings tracker; only its summary becomes a notification. */
+function reportDownload(task) {
+  if (softwareUpdates?.busy() && ['core', 'rpcs3', 'app', 'emulatorUpdate'].includes(task.kind)) {
+    softwareUpdates.progress(task)
+    return
+  }
+  downloads.report(task)
+}
 
 /**
  * Resolved central ROM directory and writable RetroArch executable paths; all
@@ -48,20 +84,43 @@ const rpcs3Status = () => ({
   hostPlatform: process.platform,
   operation: rpcs3Job?.progress || null
 })
-async function maintainRpcs3(action) {
-  if (launchInProgress || rpcs3Job)
+async function maintainRpcs3(action, updating = false) {
+  if (launchInProgress || rpcs3Job || (emulatorUpdate && !updating))
     return { success: false, error: 'Stop the running game or wait for RPCS3 setup to finish.' }
   const job = { controller: new AbortController(), progress: { phase: 'starting' } }
   rpcs3Job = job
   const progress = (value) => {
     job.progress = value
+    reportDownload({
+      id: 'rpcs3-setup',
+      name: 'RPCS3',
+      kind: 'rpcs3',
+      status: 'active',
+      ...value
+    })
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('rpcs3-install-progress', value)
   }
   job.promise = (async () => {
     try {
-      return await action({ signal: job.controller.signal, progress })
+      const result = await action({ signal: job.controller.signal, progress })
+      if (!result.upToDate)
+        reportDownload({
+          id: 'rpcs3-setup',
+          name: 'RPCS3',
+          kind: 'rpcs3',
+          status: result.success ? 'completed' : result.canceled ? 'interrupted' : 'failed',
+          error: result.error
+        })
+      return result
     } catch (error) {
+      reportDownload({
+        id: 'rpcs3-setup',
+        name: 'RPCS3',
+        kind: 'rpcs3',
+        status: 'failed',
+        error: error.message
+      })
       return { success: false, error: error.message, status: rpcs3.status() }
     } finally {
       rpcs3Job = null
@@ -86,21 +145,28 @@ async function installRpcs3AndRefresh(options) {
  * Main-owned hotkey persistence shared with the background input bridge; renderer audio/language
  * settings use localStorage separately.
  */
-const hotkeyFile = join(app.getPath('userData'), 'zenith-preferences.json')
+const preferenceStore = createPreferences(app.getPath('userData'))
+const wallpapers = createWallpaperManager({
+  userData: app.getPath('userData'),
+  preferences: preferenceStore
+})
 /**
  * Normalized active keyboard/gamepad mapping; defaults survive a missing or damaged preferences
  * file.
  */
 let hotkeys = normalizeHotkeys(null)
 try {
-  hotkeys = normalizeHotkeys(JSON.parse(fs.readFileSync(hotkeyFile, 'utf8')).hotkeys)
+  hotkeys = normalizeHotkeys(preferenceStore.get().hotkeys)
 } catch {
   /* defaults */
 }
 /**
  * Host-bound core installer and physical-file verifier, shared by launch and status IPC.
  */
-const cores = createCoreManager({ retroarchDir })
+const cores = createCoreManager({
+  retroarchDir,
+  onProgress: (task) => reportDownload({ kind: 'core', ...task })
+})
 /**
  * Trusted catalog plus persisted per-game/platform core overrides under userData.
  */
@@ -132,6 +198,7 @@ let sessionBridge = null
  * Prevents repeated Home/chord events from reopening the same always-on-top overlay.
  */
 let sessionMenuOpen = false
+let sessionAwaitingRender = false
 /**
  * Game-ID tombstones hide in-progress deletions and reject concurrent duplicate deletion
  * requests.
@@ -161,6 +228,10 @@ function openSessionMenu() {
  */
 function resumeSession() {
   sessionMenuOpen = false
+  if (sessionAwaitingRender) {
+    mainWindow?.webContents.send('session-menu', false)
+    return { success: true, waitingForRender: true }
+  }
   mainWindow?.setAlwaysOnTop(false)
   mainWindow?.webContents.send('session-menu', false)
   mainWindow?.hide()
@@ -226,6 +297,8 @@ function guideGame(gameId) {
  */
 function getScraper() {
   scraper ||= createScraper({
+    onDownload: downloads.report,
+    getPreferences: () => mediaPreferences(preferenceStore.get().media),
     userData: app.getPath('userData'),
     /**
      * Decorate the completed game record with local protocol URLs and notify a surviving renderer
@@ -250,7 +323,7 @@ function getScraper() {
 function decorateGame(game) {
   const enriched = getScraper().enrich(game)
   const cover = enriched.media.boxart || game.cover
-  const backdrop = enriched.media.snap || enriched.media.titleScreen || cover
+  const backdrop = enriched.media.snap || enriched.media.titleScreen || game.backdrop || cover
   return {
     ...enriched,
     cover,
@@ -258,6 +331,7 @@ function decorateGame(game) {
     coverUrl: enriched.media.boxart ? mediaUrl(cover) : game.coverUrl,
     backdropUrl: mediaUrl(backdrop),
     titleScreenUrl: mediaUrl(enriched.media.titleScreen),
+    logoUrl: gameLogoUrl(enriched),
     musicUrl: mediaUrl(enriched.media.music),
     videoUrl: mediaUrl(enriched.media.video)
   }
@@ -511,6 +585,8 @@ async function showLaunchError(message) {
  * @param {Object} request - Launch payload or protocol Request, as specified by the surrounding handler.
  */
 async function launchGame(event, request) {
+  if (emulatorUpdate || cores.busy() || softwareUpdates?.busy())
+    return { success: false, error: 'Wait for emulator maintenance to finish.' }
   if (rpcs3Job) return { success: false, error: 'Wait for RPCS3 setup to finish.' }
   if (launchInProgress) return { success: false, error: 'A game is already running or launching.' }
   launchInProgress = true
@@ -674,6 +750,34 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
      * @param {*} resolve - Fulfill the pending operation.
      */
     (resolve) => {
+      const waitForRender = label === 'RPCS3' && process.platform === 'win32'
+      sessionAwaitingRender = waitForRender
+      let startupTimer = null
+      let announced = false
+      const announce = () => {
+        if (announced || finished) return
+        announced = true
+        clearTimeout(startupTimer)
+        if (!event.sender.isDestroyed()) event.sender.send('game-started')
+      }
+      const revealGame = () => {
+        if (finished || announced) return
+        sessionAwaitingRender = false
+        announce()
+        // A late render signal must not dismiss a menu the user deliberately opened.
+        if (!sessionMenuOpen && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.setAlwaysOnTop(false)
+          mainWindow.hide()
+          sessionBridge?.resume()
+        }
+      }
+      if (waitForRender && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setKiosk(true)
+        mainWindow.setFullScreen(true)
+        mainWindow.setAlwaysOnTop(true, 'screen-saver')
+        mainWindow.show()
+        mainWindow.focus()
+      }
       // spawn takes the executable separately from its arguments; no shell quoting is needed.
       const child = spawn(executable, args, {
         cwd,
@@ -715,10 +819,12 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
       const finish = async (message) => {
         if (finished) return
         finished = true
+        clearTimeout(startupTimer)
         activeChild = null
         sessionBridge?.stop()
         sessionBridge = null
         sessionMenuOpen = false
+        sessionAwaitingRender = false
         globalShortcut.unregister('F10')
         globalShortcut.unregister('Escape')
         if (!event.sender.isDestroyed()) event.sender.send('game-stopped')
@@ -744,22 +850,34 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
          * Handle spawn events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
          */
         () => {
-          if (!event.sender.isDestroyed()) event.sender.send('game-started')
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
           sessionBridge = startSessionBridge(
             child.pid,
             join(__dirname, '../../resources/gamepad-bridge.ps1'),
-            openSessionMenu,
+            () => {
+              openSessionMenu()
+            },
             hotkeys,
-            mainWindow && !mainWindow.isDestroyed() ? mainWindow.getNativeWindowHandle() : undefined
+            mainWindow && !mainWindow.isDestroyed()
+              ? mainWindow.getNativeWindowHandle()
+              : undefined,
+            { watchReady: waitForRender, onReady: revealGame }
           )
-          globalShortcut.register('F10', openSessionMenu)
+          const menuDuringBoot = () => {
+            openSessionMenu()
+          }
+          if (!waitForRender) revealGame()
+          else {
+            // Never leave an unresponsive loading mask if a custom title/driver prevents detection.
+            startupTimer = setTimeout(menuDuringBoot, 120000)
+            startupTimer.unref()
+          }
+          globalShortcut.register('F10', menuDuringBoot)
           globalShortcut.register(
             'Escape',
             /**
              * Complete the register callback step owned by launchGame; caller arguments and captured state determine this stage's result.
              */
-            () => (sessionMenuOpen ? resumeSession() : openSessionMenu())
+            () => (sessionMenuOpen ? resumeSession() : menuDuringBoot())
           )
         }
       )
@@ -807,7 +925,7 @@ function createWindow() {
     kiosk: true,
     frame: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -855,7 +973,7 @@ app.whenReady().then(
   /**
    * Register Main protocols and IPC only after Electron is ready, start packaged preparation without blocking the window, then create the dashboard.
    */
-  () => {
+  async () => {
     if (app.isPackaged) {
       // Initialization must never prevent the library window from opening.
       // Only a launch request waits for copying; failures remain visible in the log.
@@ -915,6 +1033,84 @@ app.whenReady().then(
     /**
      * Read the normalized persistent keyboard/gamepad combination.
      */
+    ipcMain.handle('get-media-preferences', () => mediaPreferences(preferenceStore.get().media))
+    const fileBrowser = createFileBrowser({
+      home: app.getPath('home'),
+      desktop: app.getPath('desktop'),
+      downloads: app.getPath('downloads')
+    })
+    ipcMain.handle('files:folder-summary', async (_event, token) => {
+      try {
+        return { success: true, ...(await fileBrowser.folderSummary(token)) }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
+    ipcMain.handle('files:preview', async (_event, token) => {
+      try {
+        return { success: true, ...(await fileBrowser.preview(token)) }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
+    ipcMain.handle('files:list', async (_event, request) => {
+      try {
+        return { success: true, ...(await fileBrowser.list(request)) }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
+    ipcMain.handle('wallpapers:list', () => wallpapers.list())
+    ipcMain.handle('wallpapers:delete', async (_event, options) => {
+      try {
+        return { success: true, wallpapers: await wallpapers.remove(options) }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
+    ipcMain.handle('wallpapers:update', async (_event, patch) => {
+      try {
+        return { success: true, wallpapers: await wallpapers.update(patch) }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
+    ipcMain.handle('wallpapers:import', async (_event, token) => {
+      try {
+        const [file] = await fileBrowser.consume('wallpaper', [token])
+        return { success: true, wallpapers: await wallpapers.importFile(file) }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
+    ipcMain.handle('save-media-preferences', async (event, patch) => {
+      try {
+        if (
+          !patch ||
+          typeof patch !== 'object' ||
+          Array.isArray(patch) ||
+          Object.entries(patch).some(
+            ([key, value]) =>
+              ![
+                'downloadCovers',
+                'downloadBackgrounds',
+                'downloadVideos',
+                'downloadAudio'
+              ].includes(key) || typeof value !== 'boolean'
+          )
+        )
+          throw Error('Invalid media preferences')
+        const saved = await preferenceStore.update((current) => ({
+          media: { ...mediaPreferences(current.media), ...patch }
+        }))
+        const media = saved.media
+        scraper?.cancelDisabledRequests()
+        event.sender.send('library-changed')
+        return { success: true, preferences: media }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    })
     ipcMain.handle('get-hotkeys', () => hotkeys)
     /**
      * Normalize and atomically persist the combination, then update the running native bridge.
@@ -925,9 +1121,7 @@ app.whenReady().then(
     ipcMain.handle('save-hotkeys', async (_event, value) => {
       try {
         const next = normalizeHotkeys(value)
-        await fs.promises.mkdir(app.getPath('userData'), { recursive: true })
-        await fs.promises.writeFile(hotkeyFile + '.tmp', JSON.stringify({ hotkeys: next }))
-        await fs.promises.rename(hotkeyFile + '.tmp', hotkeyFile)
+        await preferenceStore.update({ hotkeys: next })
         hotkeys = next
         sessionBridge?.update(hotkeys)
         return { success: true, hotkeys }
@@ -949,7 +1143,8 @@ app.whenReady().then(
     ipcMain.handle('get-local-games', () => getLocalGames())
     ipcMain.handle('set-game-platform', (_event, { gameId, platform } = {}) => {
       try {
-        if (launchInProgress || rpcs3Job) throw Error('Stop the running game or setup first.')
+        if (launchInProgress || rpcs3Job || emulatorUpdate)
+          throw Error('Stop the running game or setup first.')
         const game = guideGame(gameId)
         if (!game || game.rpcs3Installed) throw Error('Game platform cannot be changed.')
         getLibrary().setPlatform(game.path, platform)
@@ -961,15 +1156,11 @@ app.whenReady().then(
       }
     })
     /**
-     * Open the native ROM picker and copy supported selections to the central library.
+     * Consume validated file-browser selections and copy them to the central library.
      */
-    ipcMain.handle('add-games', async () => {
+    ipcMain.handle('add-games', async (_event, tokens) => {
       try {
-        const selection = await dialog.showOpenDialog(mainWindow, {
-          properties: ['openFile', 'multiSelections'],
-          filters: GAME_FILE_FILTERS
-        })
-        if (selection.canceled) return { success: false, canceled: true }
+        const selection = { filePaths: await fileBrowser.consume('games', tokens) }
         const packages = selection.filePaths.filter(
           (file) => extname(file).toLowerCase() === '.pkg'
         )
@@ -1047,7 +1238,8 @@ app.whenReady().then(
       try {
         const preparationError = await retroarchPreparation
         if (preparationError) throw preparationError
-        if (launchInProgress) throw Error('Stop the running game first.')
+        if (launchInProgress || emulatorUpdate)
+          throw Error('Stop the game or wait for emulator updates.')
         const game = gameId ? guideGame(gameId) : null
         if ((game?.systemShort || platform) === 'PS3')
           throw Error('PS3 uses standalone RPCS3, not a Libretro core.')
@@ -1074,6 +1266,8 @@ app.whenReady().then(
      */
     ipcMain.handle('install-core', async (_event, system) => {
       try {
+        if (launchInProgress || emulatorUpdate)
+          throw Error('Stop the game or wait for emulator updates.')
         if (system === 'PS3') throw Error('PS3 uses standalone RPCS3, not a Libretro core.')
         const preparationError = await retroarchPreparation
         if (preparationError) throw preparationError
@@ -1085,35 +1279,110 @@ app.whenReady().then(
     /**
      * Read physical core and BIOS status for platforms currently represented in the library.
      */
+    ipcMain.handle('downloads:list', () => downloads.snapshot())
+    ipcMain.handle('downloads:clear-history', () => downloads.clearHistory())
+    ipcMain.handle('updates:check', () => {
+      if (!app.isPackaged) return { success: true, developer: true, upToDate: true }
+      if (!applicationUpdater)
+        return { success: false, error: 'Updates require an installed release.' }
+      void applicationUpdater.check()
+      return { success: true }
+    })
+    ipcMain.handle(
+      'updates:install',
+      (_event, options) =>
+        applicationUpdater?.install(options?.confirmed) || {
+          success: false,
+          error: 'No update is ready.'
+        }
+    )
+    const startEmulatorUpdate = (onProgress = () => {}) => {
+      if (launchInProgress || rpcs3Job || emulatorUpdate || cores.busy())
+        return { success: false, error: 'Stop the game or wait for current maintenance.' }
+      // Only already-installed binaries are updated. Runtime data/config directories are never targets.
+      emulatorUpdate = (async () => {
+        const preparationError = await retroarchPreparation
+        if (preparationError) throw preparationError
+        const result = await updateInstalledEmulators({
+          onProgress,
+          retroarchDir,
+          cores,
+          report: (task) => reportDownload(task),
+          updateRpcs3:
+            process.platform === 'win32' && rpcs3.status().executableReady
+              ? () =>
+                  maintainRpcs3(
+                    (context) => downloadRpcs3({ runtime: rpcs3, update: true, ...context }),
+                    true
+                  )
+              : null
+        })
+        if (!result.success) throw Error(result.error)
+        return result
+      })()
+        .catch((error) => {
+          reportDownload({
+            id: 'emulators-update',
+            name: 'Emulators',
+            kind: 'emulatorUpdate',
+            status: 'failed',
+            phase: 'failed',
+            error: error.message
+          })
+          return { success: false, error: error.message }
+        })
+        .finally(() => {
+          emulatorUpdate = null
+        })
+      return emulatorUpdate
+    }
+    ipcMain.handle('emulators:update', () => {
+      if (
+        launchInProgress ||
+        activeChild ||
+        rpcs3Job ||
+        emulatorUpdate ||
+        cores.busy() ||
+        softwareUpdates.busy()
+      )
+        return { success: false, error: 'Stop the game or wait for current maintenance.' }
+      void startEmulatorUpdate()
+      return { success: true }
+    })
+    softwareUpdates = createSoftwareUpdates({
+      app,
+      canStart: () =>
+        !launchInProgress && !activeChild && !rpcs3Job && !emulatorUpdate && !cores.busy(),
+      checkApp: () =>
+        applicationUpdater?.check() || {
+          success: false,
+          error:
+            'Zenith updates require an installed release. Installed emulators are still checked.'
+        },
+      updateEmulators: startEmulatorUpdate,
+      installApp: () => applicationUpdater.install(true),
+      report: downloads.report
+    })
+    ipcMain.handle('software:update', () => softwareUpdates.start())
     ipcMain.handle('get-rpcs3-status', rpcs3Status)
     ipcMain.handle('download-rpcs3', (_event, options) => {
+      if (emulatorUpdate) return { success: false, error: 'Emulators are updating.' }
       if (options?.confirmed !== true) return { success: false, canceled: true }
       return maintainRpcs3((context) => downloadRpcs3({ runtime: rpcs3, ...context }))
     })
-    for (const [channel, kind, extension] of [
-      ['install-ps3-firmware', 'firmware', 'pup'],
-      ['install-ps3-package', 'package', 'pkg']
+    for (const [channel, kind] of [
+      ['install-ps3-firmware', 'firmware'],
+      ['install-ps3-package', 'package']
     ]) {
-      ipcMain.handle(channel, () =>
+      ipcMain.handle(channel, (_event, token) =>
         maintainRpcs3(async (context) => {
-          const selection = await dialog.showOpenDialog(mainWindow, {
-            title:
-              kind === 'firmware' ? 'Select PS3UPDAT.PUP to install' : 'Select PS3 PKG to install',
-            properties: ['openFile'],
-            filters: [
-              {
-                name: kind === 'firmware' ? 'PS3 Firmware' : 'PS3 Package',
-                extensions: [extension]
-              }
-            ]
-          })
-          if (selection.canceled || !selection.filePaths.length)
-            return { success: false, canceled: true }
+          // Both installers accept only one-use selections issued by the in-app browser.
+          const [file] = await fileBrowser.consume(kind, [token])
           context.signal.throwIfAborted()
           return installRpcs3AndRefresh({
             runtime: rpcs3,
             kind,
-            file: selection.filePaths[0],
+            file,
             ...context
           })
         })
@@ -1162,6 +1431,7 @@ app.whenReady().then(
           return {
             platform,
             core: corePath ? core : null,
+            expectedCore: core || coreFilesFor()[platform]?.[0] || null,
             corePath,
             coreDirectory: join(retroarchDir, 'cores'),
             bios: biosStatus(retroarchDir, platform)
@@ -1257,9 +1527,46 @@ app.whenReady().then(
      * @param {Object} event - Electron or DOM event associated with this operation.
      * @param {Object} options - Operation configuration; see destructured properties and defaults below.
      */
+    const rescrapeJobs = new Map()
+    ipcMain.handle('games:rescrape', async (event, payload) => {
+      try {
+        // Renderer supplies identity/context, never authority to scrape an arbitrary path.
+        const games = getLocalGames()
+        const game = games.find(
+          (entry) => entry.id === payload?.id && entry.gameId === payload?.gameId
+        )
+        if (
+          !game ||
+          payload.platform !== game.systemShort ||
+          payload.title !== game.title ||
+          payload.path !== game.path
+        )
+          throw Error('Game is not in the library or its details changed. Refresh the library.')
+        if (!rescrapeJobs.has(game.gameId)) {
+          const task = getScraper()
+            .rescrape(games, game.gameId, (progress) => {
+              if (!event.sender.isDestroyed())
+                event.sender.send('scrape-progress', {
+                  ...progress,
+                  game: decorateGame(progress.game)
+                })
+            })
+            .then((result) => ({ success: true, ...result, game: decorateGame(result.game) }))
+            .finally(() => rescrapeJobs.delete(game.gameId))
+          rescrapeJobs.set(game.gameId, task)
+        }
+        return await rescrapeJobs.get(game.gameId)
+      } catch (error) {
+        console.log('[Scraper] Başarısız İndirmeler: IPC games:rescrape — ' + error.message)
+        return { success: false, error: error.message }
+      }
+    })
     ipcMain.handle('scan-and-scrape-games', async (event, options) => {
+      const games = getLocalGames()
+      if (options?.gameId != null && !games.some((game) => game.gameId === options.gameId))
+        throw Error('Game is not in the library.')
       const result = await getScraper().scan(
-        getLocalGames(),
+        games,
         /**
          * Complete the scan callback step owned by result; caller arguments and captured state determine this stage's result.
          *
@@ -1272,7 +1579,7 @@ app.whenReady().then(
               game: decorateGame(progress.game)
             })
         },
-        { force: options?.force === true }
+        { force: options?.force === true, gameId: options?.gameId || null }
       )
       return { ...result, games: result.games.map(decorateGame) }
     })
@@ -1280,7 +1587,33 @@ app.whenReady().then(
      * Verify ROM/core/BIOS, prepare session config, spawn RetroArch, and keep the Promise pending
      * through session exit.
      */
-    ipcMain.handle('launch-game', launchGame)
+    let sessionRequest = null,
+      sessionCompletion = null,
+      restarting = false
+    ipcMain.handle('launch-game', (event, request) => {
+      if (restarting || activeChild || launchInProgress)
+        return { success: false, error: 'A game is already running or launching.' }
+      sessionRequest = request
+      sessionCompletion = launchGame(event, request)
+      return sessionCompletion
+    })
+    ipcMain.handle('restart-session', async (event) => {
+      if (restarting || !activeChild || !sessionRequest)
+        return { success: false, error: 'No restartable session.' }
+      restarting = true
+      const request = sessionRequest
+      try {
+        await stopForRestart(activeChild, sessionCompletion)
+        event.sender.send('game-loading')
+        sessionCompletion = launchGame(event, request)
+      } catch (error) {
+        return { success: false, error: error.message }
+      } finally {
+        // Release only this transition's lock, before awaiting the new play session.
+        restarting = false
+      }
+      return sessionCompletion
+    })
     /**
      * Refuse while a game is active, delete only platform BIOS candidates, then report physical
      * status.
@@ -1307,6 +1640,28 @@ app.whenReady().then(
     ipcMain.handle('open-bios-folder', openBiosFolder)
 
     createWindow()
+    if (app.isPackaged) {
+      try {
+        const module = await import('electron-updater')
+        applicationUpdater = createApplicationUpdater({
+          app,
+          updater: module.autoUpdater || module.default.autoUpdater,
+          downloads: { report: reportDownload },
+          enabled: true,
+          canInstall: () => !launchInProgress && !rpcs3Job && !emulatorUpdate && !cores.busy()
+        })
+        updateTimer = setTimeout(() => void applicationUpdater.check(), 20000)
+        updateTimer.unref()
+      } catch (error) {
+        reportDownload({
+          id: 'zenith-update',
+          name: 'Zenith OS',
+          kind: 'app',
+          status: 'failed',
+          error: error.message
+        })
+      }
+    }
 
     app.on(
       'activate',
@@ -1344,15 +1699,19 @@ app.on(
    */
   () => {
     sessionBridge?.stop()
+    clearTimeout(updateTimer)
+    downloads.flush()
     globalShortcut.unregisterAll()
   }
 )
 
 // Wait for cancellation/rollback before closing the host of an active installer.
 app.on('before-quit', (event) => {
-  if (!rpcs3Job) return
+  if (!rpcs3Job && !emulatorUpdate && !cores.busy()) return
   event.preventDefault()
   const pending = rpcs3Job
-  pending.controller.abort()
-  void pending.promise.finally(() => app.quit())
+  pending?.controller.abort()
+  void Promise.allSettled([pending?.promise, emulatorUpdate, cores.whenIdle()]).then(() =>
+    app.quit()
+  )
 })

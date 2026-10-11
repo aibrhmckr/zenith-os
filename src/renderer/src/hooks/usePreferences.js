@@ -1,10 +1,11 @@
+import { MEDIA_DEFAULTS } from '../../../shared/mediaPreferences'
 import { normalizeHotkeys } from '../../../shared/hotkeys'
 import { useCallback, useEffect, useState } from 'react'
 
 /**
  * Allowed persisted boolean settings and defaults: menu effects on, preview audio off.
  */
-const DEFAULTS = { menuSounds: true, previewSound: false }
+const DEFAULTS = { menuSounds: true, previewSound: false, ...MEDIA_DEFAULTS }
 /**
  * Persist renderer audio preferences locally and reconcile hotkeys with Main's userData file,
  * which is also read by the native bridge.
@@ -49,6 +50,12 @@ export default function usePreferences() {
    */
   useEffect(() => {
     let active = true
+    window.electronAPI
+      .getMediaPreferences()
+      .then((media) => {
+        if (active) setPreferences((current) => ({ ...current, ...media }))
+      })
+      .catch(() => {})
     void window.electronAPI
       .getHotkeys()
       .then(
@@ -105,16 +112,25 @@ export default function usePreferences() {
    *
    * @param {string|number} key - Action/cache/preference key or input code used by this operation.
    */
-  const togglePreference = useCallback((key) => {
-    if (Object.hasOwn(DEFAULTS, key))
-      setPreferences(
-        /**
-         * Compute togglePreference's next React state from the latest queued value, avoiding stale render snapshots.
-         *
-         * @param {*} current - Latest queued state or collection entry.
-         */
-        (current) => ({ ...current, [key]: !current[key] })
-      )
-  }, [])
+  const togglePreference = useCallback(
+    async (key) => {
+      if (Object.hasOwn(MEDIA_DEFAULTS, key)) {
+        const result = await window.electronAPI.saveMediaPreferences({ [key]: !preferences[key] })
+        if (!result.success) throw Error(result.error)
+        setPreferences((current) => ({ ...current, ...result.preferences }))
+        return
+      }
+      if (Object.hasOwn(DEFAULTS, key))
+        setPreferences(
+          /**
+           * Compute togglePreference's next React state from the latest queued value, avoiding stale render snapshots.
+           *
+           * @param {*} current - Latest queued state or collection entry.
+           */
+          (current) => ({ ...current, [key]: !current[key] })
+        )
+    },
+    [preferences]
+  )
   return { preferences, togglePreference, saveHotkeys }
 }

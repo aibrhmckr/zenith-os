@@ -198,16 +198,16 @@ mevcut değildir; bu sorumluluklar bugün `index.js` içindedir. `bgm.js` yerine
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `hooks/useController.js`                                 | `useController(onFrame)` → `{mode,modeRef,controller}`. Tek `requestAnimationFrame` döngüsü, sabit 60 Hz garanti edilmez. İlk bağlı kol, axis deadzone 0.25, yön eşiği 0.5; ilk repeat 350 ms, sonra 150 ms. `hit`, `released`, `buttons`, `axes`, `move`, `now`, `inputMode`. Pil bilgisi varsa normalize eder; standart API'de pil zorunlu değildir. |
 | `hooks/inputContext.js`                                  | Rozetler ve giriş modunun React context tanımı.                                                                                                                                                                                                                                                                                                        |
-| `hooks/useGridColumns.js`                                | Grid ref → ResizeObserver ve computed grid tracks sayısı. Sütun sayısı navigasyon/adaptive row state için tek ölçüdür; sabit 8 yok.                                                                                                                                                                                                                    |
+| `hooks/useGridColumns.js`                                | Eski çok satırlı grid için sütun ölçüm yardımcısı; ana dashboard artık bunu kullanmaz. Carousel ResizeObserver doğrudan App içinde seçili kartı görünür tutar.                                                                                                                                                                                                                    |
 | `hooks/useGameLibrary.js`                                | games/loading/error/scanning/progress/warning, `refresh(force)`, `removeFromState`. Önce yerel oyunları gösterir, sonra scrape eder. Geç gelen music/video event'lerini hızlı/yavaş artwork güncellemelerinin üzerine korur; mount/unmount abonelik temizliği.                                                                                         |
 | `hooks/useMediaPreview.js`                               | `(game,enabled,sound)` → videoRef/audioRef/cinematic/stop/fadeOut/restart. 800 ms bekleme, 400 ms fade-in, maks 0.3 volume; karttan ayrılınca audio 150 ms fade-out, video reset. Launch fade 500 ms. Blur/visibility/unmount timer, rAF ve medya cleanup.                                                                                             |
-| `hooks/useSoundEffects.js`                               | `(enabled)` → `play`; ayrıca `emitSound(name)`. WAV import'ları; navigate dört Audio voice, 30 ms tekrar sınırlaması, boş voice yoksa yeni ses atlanır. Toggle/launch birer voice; menü kapalıysa navigate/toggle durur, launch ayrı tutulur.                                                                                                          |
+| `hooks/useSoundEffects.js`                               | `(enabled)` → `play`; ayrıca `emitSound(name)`. WAV import'ları ve soundPool.js yaşam döngüsü; navigate altı önceden yüklenmiş voice, throttle yok, doluysa en eski kanal kullanılır. Toggle/launch ikişer voice; navigate/toggle mute, launch bağımsız.                                                                                                          |
 | `hooks/usePreferences.js`                                | preferences/togglePreference/saveHotkeys. Menü sesi ve önizleme sesi boolean; hotkeys normalize. localStorage `zenith-preferences`; native hotkey dosyasıyla hydrate/senkronizasyon.                                                                                                                                                                   |
 | `hooks/useClock.js`                                      | Sistem HH:mm, h23; 1000 ms interval cleanup; locale formatı tr-TR.                                                                                                                                                                                                                                                                                     |
 | `hooks/i18n.jsx`                                         | `I18nProvider({children})`, `useI18n()` → language/setLanguage/t. Default en, fallback en/key, HTML lang güncelleme ve `zenith-language` localStorage.                                                                                                                                                                                                 |
 | `hooks/useBiosManager.js`                                | Eski tekrar kullanılabilir hook `(onClose)`; platform/dialogRef/busy/error/notice ve show/close/upload/openFolder. Aktif App BIOS UI'si bunu kullanmaz, App.run üzerinden çalışır.                                                                                                                                                                     |
 | `locales/en.json`, `locales/tr.json`                     | Arayüz sözlükleri; teknik/native servis hatalarının tamamı henüz çevrilmiş değildir.                                                                                                                                                                                                                                                                   |
-| `assets/main.css`                                        | Tailwind import, Xbox rozetleri, vignette, 144×216 poster, gap16, auto-fill grid, adaptive height, ince scrollbar, modal/OSK/drawer stili.                                                                                                                                                                                                             |
+| `assets/main.css`                                        | Tailwind import, Xbox rozetleri, vignette, 144×216 poster, gap16, responsive iki satırlı grid, dikey odak geçişi, ince scrollbar, modal/OSK/drawer stili.                                                                                                                                                                                                             |
 | `assets/base.css`                                        | Electron/Vite şablon renk/font temel stili; güncel main.jsx bunu import etmez.                                                                                                                                                                                                                                                                         |
 | `assets/electron.svg`, `assets/wavy-lines.svg`           | Kullanılmayan şablon varlıkları; telif/lisans envanteri açısından yine kaynak varlığı sayılır.                                                                                                                                                                                                                                                         |
 | `assets/sounds/navigate.wav`, `toggle.wav`, `launch.wav` | Kullanıcı tarafından sağlanan üç UI sesi. Vite bundle asset'leri; Git'te dar istisna. navigate ve toggle aynı byte içeriğindeyse Vite tek output dosyasını paylaşabilir.                                                                                                                                                                               |
@@ -283,7 +283,7 @@ Her invoke bir Promise döndürür; tabloda Promise'ın çözümlenen değeri ya
 | Kanal                   | Preload metodu / payload                                      | Dönen değer                                                  | İşlem / hata davranışı                                                                                                                                                      |
 | ----------------------- | ------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `get-local-games`       | `getLocalGames()`                                             | `Game[]`                                                     | Dizini oluşturur/tarar, library ile birleştirir, deleting oyunları çıkarır. FS hatası Promise reject; hook yakalar.                                                         |
-| `add-games`             | `addGames()`                                                  | Result + `count`                                             | Native dosya seçimi, central async copy, library.add; cancel ayrı, FS hatası Result.error.                                                                                  |
+| `add-games`             | `addGames(tokens)`                                                  | Result + `count`                                             | Dahili gezgin tokenlarını doğrulama, central async copy, library.add; FS hatası Result.error.                                                                                  |
 | `delete-game`           | `deleteGame(gameId)`                                          | Result                                                       | Kütüphane ID doğrulama, launch kilidi, ROM/cache/kayıt temizliği. Renderer silinecek path gönderemez.                                                                       |
 | `scan-and-scrape-games` | `scanAndScrapeGames({force?:boolean}={})`                     | `{games,warning}`                                            | Ortak scan Promise; progress/media olayları. Ağ opsiyoneldir; okunabilir yerel kütüphane korunur.                                                                           |
 | `launch-game`           | `launchGame(gamePath,consoleType)` → `{gamePath,consoleType}` | Result; missing_core/missing_bios + `platform`, BIOS details | Oyun üyeliği, exe/core/BIOS, spawn. Başarılı invoke **süreç kapanana kadar** pending kalır; başlangıç ayrı event'tir.                                                       |
@@ -380,8 +380,10 @@ sequenceDiagram
   participant M as Main
   participant I as gameImporter
   participant S as scraper
-  UI->>M: add-games
-  M->>M: dialog.showOpenDialog
+  UI->>M: files:list(kind=games, path)
+  M-->>UI: klasörler / filtreli dosyalar / seçim tokenları
+  UI->>M: add-games(tokens)
+  M->>M: token amacı / süre / fiziksel dosya doğrulaması
   M->>I: importGames(filePaths)
   I->>I: allowlist + async copy + exclusive publish
   I-->>M: merkezi kopya yolları
@@ -393,7 +395,7 @@ sequenceDiagram
   S-->>UI: scrape-progress / game-media-updated
 ```
 
-`App.addGames → run → electronAPI.addGames → importGames → library.add`.
+`App.addGames → useFilePicker → FileBrowser → files:list → electronAPI.addGames(tokens) → importGames → library.add`.
 Başarıdan sonra `refresh(false)` ilk taramayı ve artwork scraping'i başlatır.
 Kopya sırasında UI process bloklanmaz. Kaynak aynı merkezi klasördeyse yeniden
 kopyalanmaz. Harici orijinal silinse de merkezi kopya kalır. Çok dosyalı CUE/GDI
@@ -511,15 +513,12 @@ cache/backups veya Git geçmişinin fiziksel olarak silindiği iddia edilmez.
 
 ### 4.5 10-foot navigasyon ve odak
 
-144 px poster + 16 px gap, container px48. CSS `repeat(auto-fill,9rem)` kullanılabilir
-genişliği doldurur; justify-start ve sabit gap vardır. `useGridColumns` computed
-sütun sayısını ölçer. `moveIndex`: yatay komşu, dikey ±columns, eksik son satırda
-sınırlandırma; ilk satırda yukarı arama açmaz. Seçili kart scrollIntoView ile izlenir.
-
-`focusedRow=floor(focusedIndex/columns)`. Row0'da library height19rem ve tek satır
-overflow hidden; sonraki satırlarda height34rem, vertical scroll. Geçiş300ms,
-reduced-motion destekli, küçük ekranlarda viewport sınırı vardır.
-
+144×216 px poster + sabit 16 px gap, container px48. CSS grid, repeat(auto-fill,144px)
+ile pencereye sığan sütun sayısını ölçer; useGridColumns ResizeObserver ile gerçek
+sütun sayısını gamepad/klavye gezinmesine taşır. İlk satırdayken kütüphane 19rem,
+alt satıra geçildiğinde 34rem yüksekliğe 300ms içinde açılır. İki görünür satırdan
+sonraki satırlarda scrollTop 232px adımlarla ilerler. Üst sınıra basmak aramayı açmaz.
+Sola hizalama ve sabit kart ölçüleri korunur; reduced-motion kaydırmayı anında yapar.
 En üst açık dialog tüm gamepad girdilerini tüketir. Nested CoreBrowser OSK en
 üstteki dialog olduğu için arkadaki core listesi ve kartlar gezilmez. Native
 showModal Tab trap sağlar. ConsoleModal ilk content kontrolünü/initial-focus'u
@@ -681,13 +680,13 @@ kopyalama beklerken pencerenin açılmasını ve hatalarda açık kalmasını do
 
 Varsayılan Windows hedefi NSIS'tir: oneClick=false, perMachine=false,
 allowToChangeInstallationDirectory=true. Masaüstü/Başlat menüsü kısayolları ve
-bitişte çalıştır seçeneği açıktır; differentialPackage=false. Artifact:
+bitişte çalıştır seçeneği açıktır; differentialPackage=true. Artifact:
 dist/zenith-1.0.0-setup.exe (sürüm package.json'dan gelir).
 
 npm run build:win kaynakları derler ve NSIS paketini oluşturur.
 Yalnız paketlemek için npx electron-builder --win nsis --x64 kullanılabilir.
 Portable gerektiğinde ayrıca npx electron-builder --win portable --x64 çalıştırılır.
-forceCodeSigning=false ve signAndEditExecutable=false geliştirme paketlemesinde
+forceCodeSigning=false geliştirme paketlemesinde
 sertifika gerektirmez; bunlar Windows güvenlik ilkesini değiştirmez.
 
 scripts/nsis-process.cjs, mevcut beforePack doğrulamasından Windows'ta etkinleşir.
@@ -921,8 +920,8 @@ esas alınmıştır.
 | IPC / preload                                             | İstek                                  | Sonuç                                                                            |
 | --------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------- |
 | download-rpcs3 / downloadRpcs3(confirmed)                 | {confirmed:true}; diğer değerler iptal | {success,status,version?} veya {success:false,error,status}; yalnız Windows x64. |
-| install-ps3-firmware / installPs3Firmware()               | yok; PUP seçici Main'de                | {success,status,titleId:null}, canceled veya error.                              |
-| install-ps3-package / installPs3Package()                 | yok; PKG seçici Main'de                | {success,status,titleId}, canceled veya error.                                   |
+| install-ps3-firmware / installPs3Firmware(token)          | firmware amaçlı dahili gezgin token'ı | {success,status,titleId:null} veya error. Seçici iptali renderer'da IPC başlatmaz. |
+| install-ps3-package / installPs3Package(token)                 | package amaçlı tek kullanımlık token                | {success,status,titleId}, canceled veya error.                                   |
 | cancel-rpcs3-install / cancelRpcs3Install()               | yok                                    | {success:true}; çalışan iş abort edilir, cleanup bitince kilit açılır.           |
 | rpcs3-install-progress / onRpcs3InstallProgress(callback) | Main → renderer                        | {phase,received?,total?} veya null; unsubscribe döner.                           |
 | get-rpcs3-status                                          | yok                                    | Fiziksel duruma hostPlatform ve operation eklenir.                               |
@@ -1024,6 +1023,319 @@ donanım üzerinde kurulum uyumluluğu bu testlerle kanıtlanmaz.
   ve bozuk config durumunda spawn engelini doğrular. Gerçek donanımda gamepad
   algılama veya derleme süresi ölçümü bu testlerin kapsamı dışındadır.
 
+### PS3 medya önceliği, ISO çıkarma ve indirme izinleri
+
+- **Tercihler:** Settings → Medya & İndirmeler altında downloadCovers, downloadBackgrounds, downloadVideos ve downloadAudio
+  bağımsız anahtarları vardır (dördünün de varsayılanı true). Main preferences.js bunları
+  userData/zenith-preferences.json içindeki media nesnesinde tutar; sıcak tuşlarla
+  aynı seri/atomik yazma kuyruğunu kullanır. İlk tarama renderer yüklenmesini
+  beklemeden bu izinleri okur. Ses önizleme tercihi oynatmayı, dört yeni tercih
+  yalnızca ilgili medya türünün indirilmesini kontrol eder. Eski onlineImages/onlineVideos
+  değerleri açıkça kaydedilmişse yeni karşılıklarına taşınır; eksik değerler true olur.
+- **IPC:** get-media-preferences / getMediaPreferences() dört boolean döndürür.
+  save-media-preferences / saveMediaPreferences(patch), yalnızca bu dört boolean
+  anahtarını kabul eder ve {success, preferences} veya {success:false,error}
+  döndürür. Başarılı kayıt bekleyen kapatılmış türlerin isteklerini iptal eder ve
+  library-changed ile kütüphaneyi yeniler. Kapatılmış türler zorunlu yeniden
+  aramada bile CDN/Archive sorgusu göndermez. Önceden indirilmiş yerel cache silinmez.
+- **Medya sırası:** Archive HD portre kapak / fanart → Libretro boxart / snap →
+  oyun içindeki ICON0.PNG / PIC1.PNG. Klasör/kurulu PKG görselleri ilk yerel
+  okumada hazırdır; çevrim içi dosya tamamlanınca arayüz değiştirilir. PARAM.SFO
+  başlığı EBOOT yerine arama adıdır. PIC0.PNG isteğe bağlı overlay alanıdır.
+- **ISO:** ps3IsoMedia.js, tam 7-Zip 26.03 (7zip-bin-full 26.3.1) ile yalnızca
+  ICON0.PNG, PIC1.PNG ve PARAM.SFO üyelerini e/-r/-ssc- ile oyunun cache'indeki
+  benzersiz geçici klasöre çıkarır; stdout/-so kullanılmaz. 15 saniye timeout,
+  PNG için 20 MiB, SFO için 1 MiB doğrulama sınırı vardır. Headers Error ile
+  sonlansa da çıkarılmış geçerli dosyalar kullanılabilir. Geçici ağaç finally
+  içinde temizlenir; kayıtlı hedeflere yalnız doğrulanan dosyalar yayımlanır. Sonuçlar
+  userData/media/{gameId}/embedded-icon0.png ve embedded-pic1.png olur;
+  embedded-source.json kaynak yol/boyut/mtime bilgisini saklar. Değişmeyen ISO
+  ve tamamlanmış cache tekrar açılmaz. Şifreli/bozuk diskler sessizce fallback
+  kullanır; şifre çözme uygulanmaz. Tam yardımcı uygulama production dependency
+  olarak asar dışında açılır; lisanslar resources/licenses içinde paketlenir.
+- **GameTDB:** PS3 TITLE_ID, klasör PARAM.SFO veya ISO çıkarımındaki PARAM.SFO'dan
+  alınır; ISO ID'si embedded-title.json içinde kaynak kimliğiyle saklanır.
+  art.gametdb.com/ps3/cover/{US,EN,JA}/{TITLE_ID}.jpg sırayla denenir.
+  JPEG SOF/dimension kontrolü, 20 MiB ve 15 saniye sınırı vardır; başarılı sonuç
+  cover-gametdb.jpg olur ve diğer kapak kaynaklarının önüne geçer. Cover izni
+  kapalıysa bu sağlayıcıya da istek yapılmaz. Arşiv metadata'sındaki URL'ler
+  GameTDB hedefi olarak kabul edilmez; URL yalnız doğrulanmış Title ID'den üretilir.
+- **Sağlayıcılar:** PS3 Libretro dizini Sony - PlayStation 3 (Named_Boxarts,
+  Named_Snaps, Named_Titles). Sonuncusu logo değildir. Archive HD PNG araması
+  tam oyun adı ve PS3 subject filtrelidir. Portre kapak en az 600px genişlik,
+  fanart en az 1920×1080 olmalıdır; boyut metadata'sı yüksek çözünürlüğe göre
+  sıralanır, indirilen PNG başlığı ayrıca doğrulanır. 4K varsa öncelik kazanır;
+  düşük çözünürlüklü görsel büyütülüp HD diye sunulmaz. HD dosyalar cover-hd.png
+  ve fanart.png olarak saklanır (20 MiB sınırı).
+- **Video:** Önce /metadata/sony-playstation-3-video-snaps ve
+  /metadata/SonyPlaystation3VideoSnaps doğrudan denenir; uygun dosya bulunamazsa
+  mevcut arama fallback'i çalışır. Kaynağın varlığı/erişilebilirliği garanti edilmez.
+  Sony Playstation 3 / PlayStation 3 / PS3 video snaps paketleri,
+  HQ/HD/1080p/4K etiketleriyle de eşleşir. Paket üyeleri tam oyun adına veya
+  TITLE_ID'ye göre seçilir; bulunamazsa kısa bireysel preview/gameplay araması
+  yapılır. Mevcut 60 saniye/5 MiB sınırı korunur; her oyun için içerik garantisi
+  yoktur. Ses/video/logo istekleri 15 saniyeyle sınırlıdır; indirme hedefi yalnızca
+  userData/media/{gameId}/ dizinidir, başarısız değişimde eski dosya korunur.
+- **Yeniden arama:** Q veya arama boşken X → Medyayı Yeniden Ara, games:rescrape kanalına
+  {id,gameId,platform,title,path} gönderir. Main tüm alanları gerçek kütüphane
+  kaydıyla eşleştirir; renderer rastgele dosya yolu veya platform seçemez. Main kütüphane üyeliğini doğrular. İzin verilen
+  kapak/arka plan/video/ses sorguları cache doluyken de yenilenir ve atomik olarak değiştirilir;
+  diğer oyunlar korunur. games.json yazımları seridir; game-media-updated geç
+  gelen HD görselleri ve videoları renderer'a taşır. Silme akışı devam eden ISO
+  çıkarma/tarama işinin bitmesini beklediğinden cache yeniden oluşmaz.
+
+Testler: media-preferences.test.mjs (kalıcılık, istek engelleme/iptal, gerçek
+7-Zip ile sentetik ISO, HD sıralama), media-settings.cjs (gerçek Electron
+Settings/IPC/reload), scraper.test.mjs, media.cjs ve rpcs3-launcher.cjs.
+Tüm fixture'lar sentetiktir; ROM, firmware veya telifli medya repoya eklenmez.
+
+### Oyun bazlı yeniden arama sözleşmesi
+
+- preload.rescrapeGame(payload) → games:rescrape → scraper.rescrape(fullLibrary,
+  gameId, progress). Aynı oyun için eşzamanlı IPC istekleri tek iş paylaşır.
+- Açık yeniden arama otomatik tarama sırasında da kullanılabilir; renderer hemen
+  IPC gönderir ve ayrı rescraping state'i tamamlanana kadar tarama göstergesini
+  açık tutar. Diğer oyunların sıradaki video/ses indirmeleri hedef oyunu bekletmez;
+  aynı oyunun aktif dosya yazımı tamamlanır, eski kuyruk işi token ile geçersizleşir.
+- Yanıt {success:true, game, warning} yalnızca hedef görsel ve önizleme işleri
+  tamamlanınca döner. Hatalı kimlik veya silinmiş oyun {success:false,error}
+  üretir. useGameLibrary tek kartı değiştirir ve gerçek sonuç mesajını gösterir.
+- Kapak ve arka plan sorgularının cooldown kayıtları artworkCheckedAt altında
+  ayrıdır; birini sonradan açmak diğerinin bekleme süresine takılmaz.
+- local-media.mediaUrl mutlak yol, dosya mtime ve boyutundan sürümlü opak URL
+  üretir. Aynı hedef dosya yenilendiğinde Chromium eski görseli göstermeye devam
+  etmez. IPC olayları ve son yanıt yeni URL'yi taşır.
+- Terminalde [Scraper] istek adı/platformu, dört izin, sorgulanan URL, HTTP/ağ
+  hataları, biçim/boyut doğrulama hataları ve başarılı hedef yollar görünür.
+  [7-Zip] ICON0/PIC1 durumu çıkarıldı/bulunamadı/önbellek sonucunu bildirir.
+- Testler dört türü PS3 ve PS2 üzerinde ayrı ayrı açar; kuyrukta kaybolan retry,
+  diğer oyundan bağımsız retry, tür bazlı cooldown, yeni medya URL'si, gerçek Q
+  menüsü ve canlı kart değişimini kapsar. Ek kaynak: src/shared/mediaPreferences.js.
+
+## 11. Görev merkezi, güncellemeler ve PS3 açılış geçişi
+
+### Duvar kâğıdı galerisi ve arka plan önceliği
+
+`src/shared/wallpapers.js` beş özgün, CSS/SVG ile üretilen temayı ve oyun medyasının
+öncelik kuralını tanımlar. Varsayılan `minimal-dark`, `onlyCustom=false` değeridir.
+`services/wallpapers.js` Main'in dahili gezgin tokenlarından çözdüğü PNG/JPG/WebP/MP4/WebM
+dosyalarını (en fazla 200 MB) kabul eder; dosya imzasını, normal dosya olmasını ve
+kopya boyutunu doğrular. UUID adlı kopyalar `userData/wallpapers/` altında tutulur;
+başarısız işlemlerin geçici dosyaları kaldırılır. Renderer keyfi dosya yolu gönderemez.
+`local-media.js` kayıtlı `game-media://` yetenek URL'lerini ve byte-range akışını sunar;
+WebP ve WebM MIME türleri de desteklenir.
+
+Seçili ID, öncelik anahtarı ve kullanıcı galerisi `zenith-preferences.json` içindeki
+`wallpapers` alanında saklanır. `createPreferences` atomik yamaları sıralayarak medya,
+hotkey ve duvar kâğıdı güncellemelerinin birbirini silmesini önler.
+
+| IPC | Preload metodu | Sözleşme |
+| --- | --- | --- |
+| `wallpapers:list` | `getWallpapers()` | `{items, selectedId, onlyCustom}`; kayıp dosyalarda minimal temaya dönüş. |
+| `wallpapers:update` | `saveWallpaper({selectedId?, onlyCustom?})` | Yalnız kayıtlı ID/boolean kabul edilir; `{success, wallpapers?, error?}`. |
+| `wallpapers:import` | `importWallpaper(token)` | Amaca bağlı gezgin tokenı doğrulaması ve asenkron yerel kopya; gezgin iptali IPC başlatmaz. |
+| `wallpapers:delete` | `deleteWallpaper({id?, ids?:string[], all?, confirmed:true})` | Tekli/çoklu/toplu kayıtlı özel yüklemeleri siler; `{success, wallpapers?, error?}`. `ids` boş olamaz, yalnız kayıtlı özel ID'leri kabul eder; tüm seçim unlink öncesi doğrulanır. |
+
+`useWallpapers` Main snapshot'ını ve UI işlem kilidini yönetir. `WallpaperGallery`
+Ayarlar altındaki tam ekran galeri, kategoriler ve aktif rozetini sunar; toolbar ve
+kartlar arasında ölçülen koordinatlarla 2D gamepad/ok tuşu gezinmesi yapılır.
+A/Enter seçim yapar, B/Escape Ayarlar'a döner. `WallpaperVisual` temaları ve özel
+medyayı çizer. Videolar daima sessiz/döngülüdür; görünmeyen/örtülü video duraklatılır,
+CSS temaları reduced-motion tercihini izler. Oyun görseli/video varsa normal modda
+üst katmanda görünür; `onlyCustom=true` oyun arka planlarını devre dışı bırakır.
+Bozuk medya minimal temaya döner. Tema müziği tercihi bağımsız kalır.
+
+`LuminescentGlade.jsx` özgün vektör ormanını, parlayan ruh ağacını ve 32 ışık
+parçacığını üretir. Oyun görseli veya harici dosya içermez. Galeri küçük resimleri
+hareketsizdir; ana sahne görünürken animasyon oynar ve reduced-motion tercihine uyar.
+Sabit durum alanı, sabit kart başlığı yüksekliği, sürekli aynı kalınlıkta kenarlık
+ve mutlak konumlu aktif rozeti seçim sırasında yerleşimin değişmesini engeller.
+
+Özel kartın silme düğmesi veya gamepad X, odak kilitli bir onay açar. B/Escape yalnız
+onayı kapatıp önceki karta döner. Toplu silme de açık onay gerektirir. Servis işlemleri
+sıralanır; `lstat` ile normal dosya doğrulanır, yalnız UUID manifest girdileri `unlink`
+ile silinir ve `revokeMediaFile` eski URL yeteneklerini kaldırır. Aktif öğe silinirse
+`minimal-dark` kalıcı kaydedilir. Kilitli dosya hatasında başarılı silmeler korunur,
+kalan öğeler ve hata UI'a yansır. Kaynak yükleme dosyaları silinmez.
+
+Galeri Y/S ile çoklu seçim moduna girer. `selectedIds` yalnız geçici renderer
+state'idir; A/Enter/click checkbox'ı değiştirir, duvar kâğıdı tercihini değiştirmez.
+X/Delete seçili ID listesinin kopyasıyla onay açar. B/Escape önce onayı, ardından
+seçim modunu kapatır; giriş arka plana sızmaz. `useWallpapers.removeSelected` aynı
+IPC'ye `ids` gönderir; işaretlenmeyen dosyalar ve aktif tercih korunur. Aktif dosya
+seçilip silinmişse mevcut minimal-dark fallback kuralı geçerlidir.
+
+### Menü seslerinde eşzamanlılık
+
+`hooks/soundPool.js` altı navigate, ikişer toggle/launch `HTMLAudioElement` kanalını
+başlangıçta `preload=auto` ile hazırlar. Her focus için `play()` aynı çağrı içinde
+çalışır; eski 30 ms throttle ve dolu havuzda isteği atlama kaldırılmıştır. Boş kanal
+yoksa en eski aktif kanal yeniden kullanılır; en fazla altı gezinme sesi üst üste
+çalar ve daha yeni gezinme sesi öncelik alır. Bu sınırlı havuz her hareket için yeni
+nesne üretmez. `ticket` eski play-promise hatalarının yeni sesi serbest bırakmasını
+önler; ended/error, mute ve unmount kanalları temizler. Menü sesi kapalıyken navigate
+ve toggle durur; launch bağımsız kalır. Cihaz/autoplay reddi yakalanır.
+`useSoundEffects` tek App havuzunun yaşam döngüsünü ve `zenith-sound` köprüsünü
+yönetir. Oyun kartı sesi `onFocus`'tan gelir; pointer ve gamepad aynı odak yoluna
+girer, ayrı hareket bildirimiyle ikinci ses üretilmez. Galeri focus-capture kullanır.
+`sound-pool.test.mjs`, `console-os.cjs` ve `controller.cjs` aynı turda 24 ses isteğini,
+altı kanal sınırını, 12 kart focus olayını, mute ve cleanup'ı doğrular.
+
+### Normal tarama önbelleği ve imleç davranışı
+
+`useGameLibrary.refresh()` ve R kısayolu varsayılan olarak `force:false` gönderir.
+`scraper.enrich` kayıt bayrağı yerine fiziksel, sıfırdan büyük normal dosyaları okur.
+Kapak, snap/fanart, video ve müziği tam olan oyunlar sağlayıcı/ISO çıkarma kuyruğuna
+girmez. Eksik oyunlarda mevcut medya türleri atlanır; önceden indirilmiş ama
+silinmiş/boşalmış dosya negatif sonuç bekleme süresini atlayarak onarılır.
+Bulunamayan içeriklerin 24 saatlik negatif önbelleği korunur. Q menüsündeki açık
+“Medyayı Yeniden Ara” isteği ayrı zorunlu yenileme yoludur.
+
+`useController` tek polling döngüsünde gamepad düğme/analog etkinliğini
+`cursorVisibility.js` yardımcısına iletir. Anında gizleme ve mouse pointermove'da
+yeniden başlayan 2000 ms boşta kalma süresi `html[data-cursor-hidden]` ile tüm
+kontrollere/modal katmanlarına uygulanır. Klavye modu ile imleç görünürlüğü ayrı
+tutulur; unmount timer ve dinleyicileri kaldırır.
+
+Doğrulama: `npm run test:wallpapers`; `tests/wallpapers.test.mjs` dosya güvenliği,
+kalıcılık, MIME/range ve öncelik kurallarını; `tests/wallpapers.cjs` gerçek Electron
+galerisini, picker'ı, gamepad/klavyeyi, sessiz video döngüsünü ve yeniden yüklemeyi kapsar.
+
+### Dosyalar ve IPC sözleşmesi
+
+`services/downloadCenter.js` Main tarafında görev kimliklerini birleştirir. Gerçek
+alınan/toplam bayt sayısından yüzde hesaplar; toplam boyut bilinmiyorsa belirsiz
+ilerleme gösterir. Aktif olaylar 150ms aralıklarla yayınlanır, sonuçlar hemen
+yayınlanır. Son 80 tamamlanan/hatalı kayıt `userData/downloads.json` altında atomik
+olarak saklanır. Önceki süreçten kalan aktif kayıtlar `interrupted` olur; önceden
+hazır güncelleme yeniden doğrulanmadan kurulum düğmesi etkinleşmez.
+
+Renderer'daki `DownloadCenter` tamamlanan satırları Main'in `updatedAt` zamanına
+göre 4 saniye gösterir, 350ms solma animasyonuyla kaldırır. Panel yeniden açıldığında
+eski kayıtlar geri gelmez. `downloadPresentation.js` görünürlük ve yerelleştirilmiş
+başlık kurallarını paylaşır. Panelin adı **Bildirimler** olur; güncelleme veya
+kurulum düğmeleri içermez. Aktif, sıradaki ve başarısız görevler korunur. Güncelleme
+bildirimine tıklama/A, Ayarlar içindeki **Yazılım Güncelleme** düğmesine yalnız odak
+verir; işlemi başlatmaz. Odaktaki satır kaldırılırsa ilk kalan kayıt veya kapatma
+düğmesi odağı devralır.
+
+| Kanal | Preload metodu / payload | Sonuç ve işlem |
+| --- | --- | --- |
+| `downloads:list` | `getDownloads()` | Görev dizisinin güncel snapshot'ı. |
+| `downloads:clear-history` | `clearDownloadHistory()` | Tamamlanan, başarısız ve kesilen görev geçmişini diskte temizler; aktif/kuyruktaki işleri korur ve güncel snapshot yayınlar. |
+| `downloads:progress` | `onDownloadsProgress(callback)` | Main → renderer görev dizisi; unsubscribe fonksiyonu döner. |
+| `updates:check` | `checkUpdates()` | `{success,error?}`; kabul edilen kontrol/indirme arka planda sürer. |
+| `updates:install` | `installUpdate(true)` → `{confirmed:true}` | Hazır güncelleme + boş emülatör oturumu/bakım kontrolünden sonra yeniden başlatır. |
+| `software:update` | `updateSoftware()` | `{success,alreadyRunning?,error?}`; iki sağlayıcıyı arka planda denetler. İlerleme `downloads:progress` ile gelir. |
+| `emulators:update` | `updateEmulators()` | `{success,error?}`; yalnız kurulu çekirdekler ve Windows RPCS3 güncellenir. |
+
+`hooks/useDownloads.js` olay aboneliğini snapshot okumasından önce açar; geciken
+snapshot yeni olayları ezmez. `components/DownloadCenter.jsx`, `App.jsx` içindeki
+ConsoleModal'da görev adı/türü, yüzde, hata, sürüm ve sonuç geçmişini gösterir.
+Üst bardaki bildirim çanı Ayarlar ile saat arasındadır; her iki düğme saydam beyaz çerçevelidir; mouse, D veya RT ile
+açılır. Aktif görev sayısı rozet ve animasyonla gösterilir. Dialog odak kilidi,
+D-pad gezinmesi, kaydırılan görev kayıtları ve B/Escape kapatma desteklenir.
+
+### Uygulama ve emülatör güncellemeleri
+
+`services/emulatorUpdates.js` kurulu bileşenleri denetler; güncelleme gerekmiyorsa
+aktif indirme işi oluşturmadan `emulators-update / up-to-date` tamamlanmış bildirimini
+yayınlar. Bildirim “Tüm emülatörler ve çekirdekler güncel” olarak yerelleştirilir ve
+DownloadCenter'ın 4 saniyelik görünürlük süresinden sonra kaybolur. Hatalı denetimler
+bu başarı bildirimini üretmez; hiç kurulu bileşen yoksa ayrı bir bilgi mesajı gösterilir.
+
+RPCS3 başarılı kurulumdan sonra runtime kökündeki `zenith-release.json` içinde
+`installedVersion` (GitHub release tag'i), arşiv SHA-256'sı ve çalıştırılabilir dosyanın
+boyut/tarih bilgisini atomik saklar. Güncelleme, resmi GitHub API'sinden sürümü kontrol
+eder; aynı tag/hash ve fiziksel dosya doğrulanırsa arşivi indirmez. Eksik, değişmiş veya
+eski kayıt biçimine sahip kurulumlar yeniden doğrulanmış indirme yapar. Başarısız indirme
+sürüm kaydını ilerletmez; kullanıcı firmware/config/save verilerine dokunulmaz.
+
+Çekirdekler `cores/<core>.zenith-update.json` içinde son başarılı indirme/doğrulama
+zamanını ve fiziksel dosyanın boyut/tarih bilgisini tutar. Aynı geçerli dosya 24 saat
+boyunca yeniden indirilmez; kayıt yoksa/bozuksa, süre dolmuşsa veya dosya eksik/değişmişse
+normal doğrulanmış indirme yapılır. Bu politika uzaktaki sürümün her tıklamada kontrolü
+değil, 24 saatlik güncelleme aralığıdır. Başarısız denemeler aralığı yenilemez.
+
+`services/applicationUpdater.js` bağımlılığı enjekte edilen `electron-updater`
+adaptörüdür. Paketli uygulama açılışından 20 saniye sonra kontrol eder; geliştirme
+oturumunda güncelleme başlatmaz. `electron-builder.yml` GitHub kaynağı
+`aibrhmckr/zenith-os`, release türü `release`, NSIS `differentialPackage=true`.
+Updater üretilen `app-update.yml` dosyasını kullanır; URL renderer'dan alınmaz.
+Otomatik indirme açıktır; otomatik kurulum/çıkışta kurulum kapalıdır. Kurulum
+yalnız Ayarlar’daki **Yazılım Güncelleme** eylemiyle ve oyun/bakım işi bittikten sonra yapılır.
+
+`services/softwareUpdates.js` iki sağlayıcıyı `Promise.allSettled` ile birlikte
+çalıştırır. Bir sağlayıcı başarısız olsa da diğeri denetlenir. Tek aktif iş tekrarlı
+tıklamaları birleştirir, yeni oyun başlatmayı engeller ve durum/hataları Bildirimler’e
+yayınlar. Uygulama hazırsa ancak emülatör bakımı başarıyla bitince `install(true)`
+çağrılır; başlangıçtaki otomatik kontrol kendiliğinden yeniden başlatmaz. Geliştirme
+ortamında uygulama güncellemesinin bulunmaması açık hata olarak gösterilir, kurulu
+emülatörler yine kontrol edilir.
+
+Release hazırlanırken yeni sürümün installer'ı, `.blockmap` ve `latest.yml`
+birlikte yayınlanmalı, önceki release dosyaları korunmalıdır. Değişen bloklar
+indirilmeye çalışılır; eski paket/blockmap kullanılamıyorsa electron-updater tam
+indirmeye dönebilir. Delta indirme her ortamda garanti değildir. Bu değişiklik
+GitHub'a release yayınlamaz ve gerçek sürümler arası kurulum testi yerine geçmez.
+Bkz. [electron-builder güncelleme belgeleri](https://www.electron.build/auto-update.html).
+
+`coreManager.installNamed(name,true)` yeni doğrulanmış core'u aynı aktif cores
+yoluna atomik yayımlar; eski ikiliyi doğrulama hatasına karşı yedekler. Başarısız
+geri alma durumunda kurtarma kopyası korunur. `rpcs3Download({update:true})` resmi
+arşivin SHA-256/CRC ve x64 doğrulamasını korur; yalnız `.exe`/`.dll` üyelerini
+değiştirir. Güvenli `config`, `config.yml`, `dev_hdd0` gibi profil girdileri tüm
+arşivi reddettirmek yerine atlanır. İlk kurulumda da yalnız izin verilen EXE/DLL
+üyeleri UTF-8 include listesi ve `-spd` ile çıkarılır; atlanan veriler geçici
+klasöre dahi yazılmaz. Yol taşması, ADS, link ve yinelenen yollar hâlâ reddedilir.
+`portable`, `dev_hdd0`, firmware, config, save ve cache dizinlerine
+güncelleme yazmaz. Hata durumunda eski dosyaları geri yükler. Main bakım kilidi
+eşzamanlı oyun başlatmayı ve ikinci kurulumu engeller; uygulama kapanışı devam
+eden dosya yayınlama/geri alma işlemini bekler. RPCS3/çekirdek/media servisleri
+ilerlemeyi aynı merkeze gönderir. Linux RPCS3 otomatik ikili güncellemesi yoktur;
+kurulu Libretro `.so` güncellemeleri desteklenir.
+
+### PS3 medya kimliği ve yükleme maskesi
+
+`ps3IsoMedia.js` v3 extraction marker eski cache'leri yeniden denetler. PARAM.SFO
+TITLE_ID içindeki tire/boşluk/NUL temizlenir; SFO okunamıyorsa PS3_DISC.SFB ve son
+olarak açık ürün kodu içeren dosya adı denenir. Bölge/oyun tahmini yapılmaz.
+GameTDB US→EN→JA kapağı yerel ICON0'dan önceliklidir. Yeni Title ID bulunduğunda
+eski başarısız kapak sorgusunun bir günlük bekleme süresi atlanır; manuel rescrape
+çıkarma ve sağlayıcı sorgusunu zorlar. Ağ/ID yoksa yerel PNG'ler korunur.
+
+Windows RPCS3 açılışında Main Zenith'i en üstte tutar. `rpcs3Config.js` fullscreen,
+focus kaybında devam etme, PPU hint kapatma ve `FPS: %F | %T | RPCS3` başlık
+biçimini yazar. `gamepad-bridge.ps1` 250ms aralıklarla yalnız emülatör PID'sinin
+görünür pencerelerini inceler; art arda üç pozitif FPS örneği `ready` mesajını üretir.
+`sessionBridge.js` parçalanmış stdout satırlarını toplar. Main `game-started`
+olayını bu sinyale kadar geciktirir, ardından always-on-top'u kaldırıp Zenith'i
+gizler. Açık oyun menüsü geç gelen sinyalle kapanmaz. Escape/F10 veya oyun
+kombinasyonu yükleme sırasında da menüyü açar. Sinyal 120 saniyede gelmezse
+yükleme perdesinin üzerinde Oyuna Dön/Yeniden Başlat/Çık menüsü açılır. Hazır sinyali
+gelmeden Oyuna Dön seçmek perdeyi kaldırmaz. Exit/error maskeyi temizler.
+Bu pozitif FPS denetimi bir pencere sinyalidir, görüntü pikseli analizi değildir;
+özel RPCS3 config'leri/hardware üzerinde gerçek oyun testi ayrıca gerekir.
+Linux'ta native hazır-pencere denetimi uygulanmaz; fullscreen ve hint ayarları
+kullanılır. RPCS3 anahtarları [resmi config tanımından](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/Emu/system_config.h),
+FPS davranışı [gs_frame](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/rpcs3qt/gs_frame.cpp) üzerinden doğrulanmıştır.
+
+### Uygulama görselleri ve testler
+
+Kullanıcının sağladığı logo oranı korunarak `resources/icon.png`, `build/icon.png`,
+çok boyutlu `build/icon.ico` ve `build/icon.icns` üretildi. BrowserWindow bütün
+hostlarda PNG'yi kullanır. Windows `win.icon=build/icon.ico` ve
+`signAndEditExecutable=true` ile EXE kaynak ikonunu işler; zorunlu imzalama kapalı,
+mevcut NSIS ortam düzeltmesi korunur.
+
+`download-center.test.mjs` görev kalıcılığı ve updater olaylarını;
+`core-catalog.test.mjs`/`rpcs3-install.test.mjs` ikili güncellemede veri korumasını;
+`ps3-media-providers.test.mjs` Title ID ve GameTDB fallback'lerini sınar.
+Electron `console-os.cjs --screenshot` 1920/1280/1024 genişliklerde çift satır
+grid ve indirme panelini, `media.cjs` gerçek IPC ilerleme bildirimlerini,
+`rpcs3-launcher.cjs` hazır sinyali/odak/menü geçişini test eder. Test ROM/ikili
+dosyaları sentetiktir; gerçek telifli içerik repoya eklenmez.
+
 ## Özellik Geliştirme Kataloğu (Extension & Feature Guide)
 
 Bu katalog mevcut dosyalara dayanır; aşağıdaki adımların hiçbiri ROM/BIOS/medya
@@ -1116,8 +1428,8 @@ profilinde kalır ve kaynak bağlantıları korunur.
    altında toplayıp mevcut kurallara uygulayın. App'in `zenith-shell` kökü veya
    documentElement üzerinde bir `data-theme` değeri kullanılabilir; bu henüz mevcut
    bir tema seçici olduğu anlamına gelmez.
-2. **Yerleşim sözleşmesi:** Poster ölçüsü/gap değişirse `useGridColumns` ölçümü,
-   `App.moveIndex`, tek/çift satır genişlemesi ve `console-os.cjs --screenshot`
+2. **Yerleşim sözleşmesi:** Poster ölçüsü/gap değişirse grid-template-columns/grid-auto-rows,
+   `App.moveIndex`, ResizeObserver/scrollIntoView ve `console-os.cjs --screenshot`
    birlikte doğrulanmalıdır. Gamepad focus ring, modal native top layer,
    pointer-events-none vignette ve reduced-motion desteğini koruyun.
 3. **Tercih modeli:** Yeni boolean için `hooks/usePreferences.js:DEFAULTS` içine
@@ -1164,3 +1476,208 @@ profilinde kalır ve kaynak bağlantıları korunur.
    diff'i inceleyin. Gerçek ses/görüntü iddialarını fiziksel cihaz üzerinde doğrulayın;
    yalnız sahte spawn testiyle sabit FPS veya her aygıtta ses garantisi vermeyin.
    Son kullanıcı installer'ını kaynak diff incelemesinden sonra ayrı olarak üretin.
+
+### Duvar kâğıdı odağı ve ses sınırı
+
+`WallpaperGallery` son odaklanan/üzerine gelinen özel kartı referansla tutar.
+S/Y veya Seç düğmesi seçim modunu açarken bu kartı hemen işaretler ve
+`focus({preventScroll:true})` ile odağı korur. `useMediaPreview` yalnız-duvar-kâğıdı
+modunda yeni önizleme başlatmaz; `useLayoutEffect` mevcut oyuncuları ve ayrılan
+seslerin fade zamanlayıcılarını durdurur. Oyun/medya URL değişiminde bu sessiz
+sınır yeniden uygulanır. Ayarlar ses tercihini değiştirmeden switch’i disabled
+ve %50 opak yapar. Mod kapatıldığında kayıtlı ses tercihi tekrar kullanılır.
+
+`tests/software-updates.test.mjs` ortak iş, bakım kilidi, hata ve kurulum sırasını;
+`tests/download-center.cjs` bildirimden yalnız odak geçişini ve açık IPC eylemini;
+`tests/wallpapers.cjs` seçim odağı/sayacını; `tests/media.cjs` ses susturma ve tercih
+korumasını gerçek Electron/Main/preload/React hattında doğrular.
+
+
+### Dahili dosya gezgini ve RPCS3 oturum izolasyonu
+
+| Dosya | Sorumluluk |
+| --- | --- |
+| src/main/services/fileBrowser.js | Asenkron yerel sürücü/klasör listesi; amaca göre uzantı filtresi; 250 kayıtlık sayfalar; 30 dakika geçerli, tek kullanımlık seçim tokenları. İçe almadan önce dosya türü, boyutu ve mtime yeniden doğrulanır. Windows UNC, device ve ADS yolları reddedilir; symlink girdileri listelenmez. |
+| src/renderer/src/components/FileBrowser.jsx | Tam ekran modal; D-pad/analog veya oklarla gezinme, A/Enter ile klasöre girme/dosya seçme, B/Esc ile üst klasör, X ile onay. En üst seviyede B veya Vazgeç kapatır. Yalnız üst modal girdiyi alır; kapanışta önceki odak korunur. |
+| src/renderer/src/hooks/useFilePicker.jsx | Seçim isteğini Promise ile içe aktarma çağrısına bağlar; iptal null döndürür ve dosya işlemi başlatmaz. |
+| src/main/services/restartSession.js | Yalnız sahip olunan emülatör sürecini sonlandırır; close ve önceki launch Promise temizliğini bekler. 10 saniyelik kapanma zaman aşımında yeni süreç başlatılmaz. |
+
+| IPC / preload | Girdi | Çıktı / davranış |
+| --- | --- | --- |
+| files:list / listFiles(request) | {kind: games veya wallpaper veya package veya firmware, path?: mutlak yerel klasör veya null, offset?: sayı} | {success,path,parent,entries,nextOffset?} veya {success:false,error}; sadece dizin metaverisi, dosya içeriği yok. Dosyada name/token/size, klasörde name/path/directory bulunur. |
+| add-games / addGames(tokens) | games amaçlı token dizisi | ROM merkezi games dizinine kopyalanır; PKG kurulum hattına gider; {success,count?,error?}. |
+| wallpapers:import / importWallpaper(token) | wallpaper amaçlı token | İmza/boyut denetiminden sonra userData/wallpapers içine kopya; {success,wallpapers?,error?}. |
+| install-ps3-package / installPs3Package(token) | package amaçlı token | RPCS3 durum paneli dahili gezgin kullanır; kurulum ve kütüphane yenileme sonucu. Diğer konsolların BIOS seçicileri native kalır. |
+| restart-session / restartSession() | yok | Son Main launch isteğini tekrar kullanır; yeni emülatörün çıkışına kadar bekleyen {success,error?}. Paralel restart reddedilir; renderer komut veya PID gönderemez. |
+| game-loading / onGameLoading(callback) | Main → renderer | Yeniden başlatmada perdeyi tekrar açar. launchEpoch önceki oturumun finally bloğunun yeni perdeyi kapatmasını engeller. Abonelik disposer döndürür. |
+
+RPCS3 global ve oyun bazlı input_configs profillerinde Player 1–7 için PS Button
+boşaltılır; diğer kontrolcü eşlemeleri korunur. GuiConfigs/CurrentSettings.ini içindeki
+GSFrame bölümüne disableKbHotkeys=true yazılarak RPCS3 Home ve dahili Restart
+kısayolları kapatılır. İlk değişiklikte .zenith-backup tutulur. PPU/shader ve
+mouse-keyboard geçiş ipuçları kapalıdır. Zenith menüsündeki Yeniden Başlat,
+RPCS3 GUI komutunu çağırmaz; stopForRestart ardından aynı doğrulama ve spawn hattını kullanır.
+Bu yöntem emülatörün başka nedenlerle çökmesini garanti olarak önlemez.
+
+Windows bridge derleme boyunca PID/HWND doğrulanmış Zenith penceresini her 250ms
+kontrolde TOPMOST tutar. Pozitif FPS sinyali üç ardışık örnekte görülmeden perde
+kalkmaz; arada sıfır/hazır olmayan örnek sayacı sıfırlar. Bu Vulkan API hook'u değildir:
+gerçek görüntü ve Windows foreground davranışı donanım üzerinde ayrıca sınanmalıdır.
+Linux için ilk kare watcher'ı yoktur. Oyun içi sistem diyalogları bilerek korunur;
+Home menüsünün tuş yolları kapatılır. İlgili upstream kaynaklar:
+[gs_frame.cpp](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/rpcs3qt/gs_frame.cpp),
+[gui_settings.h](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/rpcs3qt/gui_settings.h),
+[pad_config.h](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/Emu/Io/pad_config.h).
+
+Duvar kâğıdı çoklu seçiminde A/Enter/tıklama checkbox değiştirir; Y/S tekrar
+basılması modu kapatmaz. B/Esc seçimi iptal eder, başarılı Seçilenleri Sil işlemi
+moddan çıkar. Galeri metinlerinden Özel kelimesi kaldırılmıştır; kalıcı onlyCustom
+anahtarı eski tercihlerle uyumluluk için değişmez.
+
+Testler: file-browser.test.mjs token/filtre/sayfalama/doğrulama;
+restart-session.test.mjs close/cleanup bekleme ve zaman aşımı;
+rpcs3.test.mjs profil yedeği ve menü izolasyonu;
+windows-session-bridge.test.mjs sahte Win32 sinyalleriyle kararlı readiness;
+console-os.cjs, wallpapers.cjs ve rpcs3-launcher.cjs gerçek Electron IPC/DOM,
+dahili gezgin, seçim devamlılığı ve iki ardışık restart akışını kapsar.
+
+
+### Üç panelli dosya gezgini (Split View)
+
+FileBrowser.jsx artık yüzde 22 hızlı erişim, yüzde 48 liste ve yüzde 30 önizleme
+oranlarında üç bağımsız panel kullanır. Main, Electron home/desktop/downloads
+yollarını (OneDrive yönlendirmeleri dahil) ve mevcut sürücüleri sağlar. Liste
+boyut, değiştirilme zamanı, tür, mevcut platform ipucu ve breadcrumb bileşenlerini
+döndürür. Genel ISO uzantısı tek başına PS2 rozeti oluşturmaz; bu gezgin listesi
+ISO disk denetimi yapmaz. Sayfalama 250 kayıttır ve önceki/sonraki sayfa desteklenir.
+
+files:preview / previewFile(token | null), doğrulanmış gezgin tokenının resim/video
+olduğunu, boyut sınırını ve dosya başlığını kontrol eder. {success,url? ,error?}
+döndürür. local-media.js previewMediaUrl rastgele, geçici bir game-media URL'si
+oluşturur. Her yeni önizleme eski adresi iptal eder; null ve modal cleanup da
+iptal eder. Kütüphane için kayıtlı URL'ler etkilenmez. Resim naturalWidth/Height,
+video videoWidth/Height üzerinden çözünürlük gösterilir. Video sessiz/loop oynar;
+odak değişince pause ve kaynak temizliği yapılır. Geç gelen yanıtlar eski karta
+uygulanmaz. Dosyayı önizlemek import tokenını tüketmez.
+
+A/Enter dosyayı doğrudan içe aktarır veya klasöre girer; X odaktaki dosyayı onaylar.
+B/Backspace üst klasöre çıkar; Esc veya sağ üst Kapat tüm gezgini kapatır.
+LB/RB, yatay D-pad/analog, sol/sağ ok ve PgUp/PgDn sütun değiştirir; dikey hareket
+aktif sütunun satırlarında sınırları aşmadan ilerler. Sütun odak indeksleri korunur.
+Oyun ve duvar kâğıdı kütüphanesi girdiyi almaz. Sağ panelde onay butonu yalnız
+bir dosya seçiliyken etkinleşir. Bu kontrol sözleşmesi önceki tek sütunlu açıklamanın yerini alır.
+
+Doğrulama komutu: npm run test:file-browser. file-browser.test.mjs hızlı erişim,
+metaveri, token ayrımı ve önizleme iptalini; file-browser.cjs gerçek Electron IPC,
+üç sütun oranı, klavye/analog/D-pad, LB/RB odak belleği, boş klasör, görsel çözünürlüğü,
+oynayan sessiz video temizliği ve A/X içe aktarmasını kapsar.
+
+### Konsol durum kartları ve PUP dosya seçimi
+
+`ConsoleStatusCard.jsx` SystemSettings ve Rpcs3Status için ortak ikon, tam konsol adı,
+emülatör etiketi, fiziksel Hazır/Eksik rozeti ve açılır teknik ayrıntıları sunar.
+Ham core/runtime/firmware yolları varsayılan DOM'da bulunmaz; kullanıcı Ayrıntıları
+Göster dediğinde eklenir. Kartlar eşit yüksekliğe sahip, dar ekranlarda tek sütuna
+inen iki sütunlu bir düzendedir. RPCS3 dört ana eylemi ayrı 2×2 grupta tutar;
+indirme onayı ve işlem iptali bu grubun dışındadır. Genel yasal footer korunur.
+`ConsoleModal.jsx` systems/rpcs3 için düğme konumlarından yönsel odak hesaplar;
+iç içe dosya gezgini kendi gamepad/klavye girdilerini sahiplenir.
+
+`get-system-status` artık `expectedCore` (eksik kurulumun beklenen çekirdek adı)
+alanını da döndürür. Bu alan Hazır durumunu belirlemez. RPCS3 durumundaki
+`installedVersion`, yalnız `zenith-release.json` boyut/zaman kaydı mevcut fiziksel
+çalıştırılabilir dosyayla eşleşiyorsa gösterilir. Bozuk/eksik sürüm kaydı kurulumun
+fiziksel durumunu etkilemez; sürüm uydurulmaz.
+
+`Rpcs3Status → useFilePicker.pick('firmware'|'package') → files:list →
+installPs3Firmware(token)|installPs3Package(token)` akışı PUP/PKG için native
+seçici açmaz. Main tek kullanımlık, amaca bağlı token'ı tüketir, boyut/zaman ve
+normal dosya denetimini yineler, sonra mevcut imza doğrulamalı kurulum hattına
+geçer. Seçici iptalinde kurulum IPC'si çağrılmaz. Buton tekrar etkinleştiğinde
+odağı geri alır. `tests/system-status.cjs` kart hiyerarşisi, yolların gizlenmesi,
+ayrıntılar, 2×2 eylemler, responsive düzen ve gamepad/klavye akışını;
+`tests/rpcs3-launcher.cjs` gerçek IPC üzerinden PUP/PKG seçimini sınar.
+
+### Filtre ve Ayarlar gezinme kartları
+
+`ConsoleIcon.jsx`, filtre ve sistem durumu kartlarında kullanılan yerel SVG konsol
+siluetlerini içerir; marka logosu dosyası veya uzak medya gerektirmez. `App.jsx`
+filtre kartlarına arama metninden bağımsız toplam platform oyun sayısını ekler.
+Seçili filtre `aria-pressed`, gamepad odağı `data-controller-focused` ile ayrı
+vurgulanır. `ConsoleModal` ölçülen sütun sayısını kullanarak 2D gezinmeyi korur;
+klavye okları filtre/ayar sayfasında aynı yönlendirmeyi kullanır. Açık dil dropdown'u
+kendi tuşlarını tüketir. Hidden/restore durumlarında focusin gelmese de vurgular
+gezinti sırasında açıkça güncellenir.
+
+`SettingsIcon.jsx` palet, çip, güncelleme, dünya ve chevron SVG'lerini sağlar.
+`SystemSettings.jsx` dil kontrolünü yatay bir satırda, alt sayfa bağlantılarını
+başlık/açıklama/ikon içeren dikey kartlarda sunar. Eski data-* eylem seçicileri,
+güncellemenin açık kullanıcı eylemiyle başlatılması ve bildirimden odak aktarımı
+korunur. EN/TR sözlükleri oyun sayısı ve kart açıklamalarını içerir.
+`tests/navigation-cards.cjs` oyun sayıları, ikonlar, seçili/odak görünümü,
+klavye/gamepad, dil geçişi, hedef sayfalar ve güncelleme onayını gerçek renderer'da
+sınar; dosyalar sentetik, güncelleme IPC sonucu test çiftidir.
+
+### Dosya gezgini klasör içerik özeti
+
+Gezgin ilk açılışta konumları sol panele alıp kullanıcı dizininin gerçek içeriğini
+orta panele yükler; hızlı erişim kısayolları dosya satırı olarak tekrarlanmaz. Üst
+dizinden sürücü seçimine dönüldüğünde orta panel konum seçme ipucu gösterir.
+`fs.lstat` boyut ve değiştirilme tarihini sağlar; klasör boyutu yerine dosya listesi
+Klasör türünü gösterir, recursive toplam sağdaki detay kartındadır.
+
+| IPC / preload | Girdi | Sonuç |
+| --- | --- | --- |
+| files:folder-summary / summarizeFolder(token) | Son listelenmiş klasörün summaryToken değeri; null iptal eder | {success,files,folders,size,skipped,partial}, {success,canceled} veya {success:false,error}. Ham yol kabul edilmez. |
+
+`services/folderSummary.js` opendir/lstat ile dosya içeriği okumadan asenkron tarar.
+Varsayılan 10.000 öğe / 2 saniye işlem bütçesi, sembolik bağlantı atlama ve okunamayan
+öğeleri partial olarak işaretleme vardır. Yeni istek önceki taramayı iptal eder;
+renderer 180 ms odak debounce'u ve unmount temizliğiyle eski yanıtları atar.
+Özet tüm dosya türlerini ve alt klasörleri kapsar; import uzantı filtresine bağlı
+değildir. `fileBrowser.js` 30 dakika geçerli klasör yeteneklerini en fazla 2.000
+kayıtla sınırlar. Dosya içe aktarma token'ları bu IPC için kullanılamaz.
+Birim testleri toplam, fiziksel boyut/tarih, sınır, iptal, sembolik döngü ve token
+ayrımını; Electron testleri Home tekrarı, boş/dolu klasör, boyut/tarih, gezinme ve
+oyun/duvar kâğıdı/PUP/PKG seçimini kapsar.
+
+### Cinematic dashboard, focus ownership and update tracking
+
+- `GameSpotlight.jsx` renders local ClearLogo URLs, a title fallback on image failure,
+  optional metadata chips and a two-line synopsis. `App.jsx` keys the spotlight by
+  game identity; its entry animation respects reduced motion. The left vignette is
+  pointer-transparent and lives behind the spotlight text.
+- The header's `.system-dock` owns controller status, notification and settings
+  shortcuts, separators and the live clock. Top search and bottom help both use
+  `KeyBadge` with the same amber Y styling.
+- Cover images fill their poster using `object-fit: cover` and `top center` positioning.
+  Missing covers render the existing original `ConsoleIcon` hardware silhouettes.
+  A 248 px / 480 px viewport expands between one and two rows, with an independent
+  24 px footer clearance so wrapping toolbar controls cannot consume that space.
+- `MenuCardContent.jsx` shares icon/title/description/chevron presentation among
+  system, game-options and session menus; parent callbacks and data-action markers
+  remain unchanged. BIOS/core/RPCS3 service operations are unaffected.
+- `ConsoleModal.jsx` keeps system-card actions local before navigating to Details,
+  then the next card. Details has a full-width 36 px minimum hitbox. Settings uses
+  nearest scrolling in both directions, with a final downward scroll exposing the
+  legal footer. Status modals reserve 40 px bottom scroll padding.
+- `applicationUpdater.js` and `softwareUpdates.js` receive Electron's app object.
+  `app.isPackaged === false` bypasses application release lookup/install, including
+  the legacy `updates:check` IPC. Emulator checks still run. No new IPC channel is
+  needed: `downloads:progress` carries the aggregate task's `component`,
+  `componentPercent`, `completedComponents`, `totalComponents`, and `developer`.
+  Main's `reportDownload` routes individual maintenance provider events into that
+  aggregate. `DownloadCenter` hides the active aggregate; Settings displays it,
+  and only its final result becomes a notification. Individual user-requested
+  installs outside maintenance retain their own progress notifications.
+- `scripts/generate-sounds.js` generates deterministic original mono PCM WAVs
+  without external assets or dependencies: navigate 48 ms, toggle 90 ms, back
+  80 ms, launch 720 ms. `soundPool.js` retains six navigation voices and two per
+  other effect, with bounded overlap, quiet gains and silent device-error fallback.
+  Menu mute applies to navigate/toggle/back; launch remains independent.
+
+Validation: `tests/spotlight-package.test.mjs` checks WAV framing/endpoints/levels,
+release guards and aggregate progress. Electron suites `navigation-cards.cjs`,
+`system-status.cjs`, `download-center.cjs`, `controller.cjs` and `console-os.cjs`
+cover rendering, details traversal, two-way scrolling, notification behavior,
+shared badges, input routing and session actions using isolated synthetic fixtures.
