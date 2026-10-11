@@ -49,6 +49,16 @@ app.once('browser-window-created', (_, win) => {
       assert.equal(state.root, true, 'React must mount inside #root')
       assert.equal(state.dock, true)
       assert.equal(state.api, 'function', 'Preload remains available')
+      assert.deepEqual(await evaluate('window.electronAPI.getAppUpdateState()'), {
+        status: 'developer',
+        ready: false
+      })
+      assert.deepEqual(await evaluate('window.electronAPI.checkUpdates()'), {
+        success: true,
+        developer: true,
+        upToDate: true
+      })
+      assert.equal((await evaluate('window.electronAPI.quitAndInstallUpdate()')).success, false)
       assert(!state.body.includes('HTTP/1.1'), 'No raw HTTP stream in document')
       const modules =
         await evaluate(`Promise.all(['/src/main.jsx', '/@vite/client'].map(async url => {

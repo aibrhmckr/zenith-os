@@ -136,7 +136,9 @@ export default function DownloadCenter({ tasks, onOpenUpdates }) {
               <p className="text-sm opacity-70">{task.version}</p>
             )}
             {task.kind === 'softwareUpdate' && task.status === 'completed' && (
-              <p className="text-sm text-emerald-200 mt-2">{t('softwareUpdateComplete')}</p>
+              <p className="text-sm text-emerald-200 mt-2">
+                {t(task.phase === 'ready-to-install' ? 'appUpdateReady' : 'softwareUpdateComplete')}
+              </p>
             )}
           </li>
         ))}

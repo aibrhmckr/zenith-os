@@ -7,6 +7,7 @@ import ConsoleDropdown from './ConsoleDropdown'
 import SettingsIcon from './SettingsIcon'
 import { taskError } from '../hooks/downloadPresentation'
 import { useI18n } from '../hooks/i18n'
+import useApplicationUpdate from '../hooks/useApplicationUpdate'
 /**
  * Render language/audio/hotkey settings or the library-only core/BIOS status page. Main owns
  * filesystem operations; this component presents their live results.
@@ -39,6 +40,8 @@ export default function SystemSettings({
   onDeleteBios
 }) {
   const { t, language, setLanguage } = useI18n()
+  const appUpdate = useApplicationUpdate()
+  const appUpdating = ['checking', 'downloading'].includes(appUpdate.status)
   /**
    * Physical core/BIOS status plus operation busy/error/message state; Ready is recomputed by Main
    * rather than set optimistically.
@@ -122,13 +125,16 @@ export default function SystemSettings({
   )
   // Main owns the long-running operation; opening this page never initiates an update.
   const updateSoftware = async () => {
-    if (busy || updating) return
+    if (busy || updating || appUpdating) return
     setBusy(true)
     setFailed(false)
+    setMessage('')
     try {
-      const result = await window.electronAPI.updateSoftware()
+      const result = appUpdate.ready
+        ? await window.electronAPI.quitAndInstallUpdate()
+        : await window.electronAPI.updateSoftware()
       if (!result.success) throw Error(result.error)
-      setMessage(t('softwareUpdateStarted'))
+      setMessage(t(appUpdate.ready ? 'appUpdateInstalling' : 'softwareUpdateStarted'))
     } catch (error) {
       setFailed(true)
       setMessage(error.message || t('error'))
@@ -281,7 +287,7 @@ export default function SystemSettings({
             <button
               data-software-update
               data-settings-update-focus={focusUpdate}
-              aria-disabled={busy || updating}
+              aria-disabled={busy || updating || appUpdating}
               className="settings-navigation-card"
               onClick={updateSoftware}
             >
@@ -290,10 +296,44 @@ export default function SystemSettings({
               </span>
               <span className="settings-card-copy">
                 <strong>
-                  {t('softwareUpdate')}
+                  {t(appUpdate.ready ? 'appUpdateReady' : 'softwareUpdate')}
                   {updating ? ' · ' + t('working') : ''}
                 </strong>
-                <span>{t('softwareUpdateNavHelp')}</span>
+                <span>{t(appUpdate.ready ? 'installUpdate' : 'softwareUpdateNavHelp')}</span>
+                <span
+                  className="settings-update-tracker"
+                  data-app-update-status={appUpdate.status}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {appUpdate.status === 'developer' && <span>{t('developerBuild')}</span>}
+                  {appUpdate.status === 'checking' && <span>{t('appUpdateChecking')}</span>}
+                  {appUpdate.status === 'up-to-date' && <span>{t('appUpdateCurrent')}</span>}
+                  {appUpdate.status === 'downloading' && (
+                    <>
+                      <span>
+                        {t('appUpdateDownloading')
+                          .replace('{version}', appUpdate.version || '')
+                          .replace('{percent}', Math.round(appUpdate.percent || 0))}
+                      </span>
+                      <progress
+                        aria-label={t('appUpdateTitle')}
+                        max="100"
+                        value={appUpdate.percent ?? undefined}
+                      />
+                    </>
+                  )}
+                  {appUpdate.ready && (
+                    <span>
+                      {t('appUpdateReadyHelp').replace('{version}', appUpdate.version || '')}
+                    </span>
+                  )}
+                  {appUpdate.status === 'error' && (
+                    <span className="text-rose-200">
+                      {taskError({ error: appUpdate.message }, t)}
+                    </span>
+                  )}
+                </span>
                 {update && (
                   <span
                     className="settings-update-tracker"
@@ -301,7 +341,9 @@ export default function SystemSettings({
                     role="status"
                     aria-live="polite"
                   >
-                    {update.developer && <span>{t('developerBuild')}</span>}
+                    {update.developer && appUpdate.status !== 'developer' && (
+                      <span>{t('developerBuild')}</span>
+                    )}
                     {updating && (
                       <>
                         <span>
@@ -322,7 +364,15 @@ export default function SystemSettings({
                         </span>
                       </>
                     )}
-                    {update.status === 'completed' && <span>{t('softwareUpdateComplete')}</span>}
+                    {update.status === 'completed' && (
+                      <span>
+                        {t(
+                          update.phase === 'ready-to-install'
+                            ? 'appUpdateReady'
+                            : 'softwareUpdateComplete'
+                        )}
+                      </span>
+                    )}
                     {update.status === 'failed' && (
                       <span className="text-rose-200">{taskError(update, t)}</span>
                     )}

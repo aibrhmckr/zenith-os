@@ -55,6 +55,7 @@ nsis:
   createStartMenuShortcut: true
   runAfterFinish: true
   differentialPackage: true
+  # Keep installer/blockmap and latest.yml together in the published GitHub release.
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
@@ -78,6 +79,7 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
 publish:
+  # electron-updater reads the generated app-update.yml; no token belongs in the app.
   provider: github
   owner: aibrhmckr
   repo: zenith-os

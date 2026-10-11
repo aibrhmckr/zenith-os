@@ -21,6 +21,25 @@ const localGamesAPI = {
   getDownloads: () => ipcRenderer.invoke('downloads:list'),
   clearDownloadHistory: () => ipcRenderer.invoke('downloads:clear-history'),
   checkUpdates: () => ipcRenderer.invoke('updates:check'),
+  getAppUpdateState: () => ipcRenderer.invoke('app-update:status'),
+  quitAndInstallUpdate: () =>
+    ipcRenderer.invoke('app-update:quit-and-install', { confirmed: true }),
+  /** Only release lifecycle channels are exposed; Electron events never cross the bridge. */
+  onAppUpdate: (callback) => {
+    const channels = [
+      'checking',
+      'available',
+      'not-available',
+      'progress',
+      'downloaded',
+      'error'
+    ].map((event) => 'app-update:' + event)
+    const listener = (_event, state) => callback(state)
+    for (const channel of channels) ipcRenderer.on(channel, listener)
+    return () => {
+      for (const channel of channels) ipcRenderer.removeListener(channel, listener)
+    }
+  },
   installUpdate: (confirmed) => ipcRenderer.invoke('updates:install', { confirmed }),
   updateEmulators: () => ipcRenderer.invoke('emulators:update'),
   updateSoftware: () => ipcRenderer.invoke('software:update'),

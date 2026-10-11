@@ -10,7 +10,7 @@ const deferred = () => {
   return { promise, resolve }
 }
 
-test('one explicit action checks both providers, coalesces clicks and waits for emulator writes before restart', async () => {
+test('one action checks both providers and coalesces clicks; staging never restarts the application', async () => {
   const emulators = deferred(),
     events = [],
     calls = []
@@ -24,10 +24,6 @@ test('one explicit action checks both providers, coalesces clicks and waits for 
       calls.push('emulators')
       return emulators.promise
     },
-    installApp: () => {
-      calls.push('install')
-      return { success: true }
-    },
     report: (event) => events.push(event)
   })
   assert.deepEqual(calls, [])
@@ -40,8 +36,9 @@ test('one explicit action checks both providers, coalesces clicks and waits for 
   assert.equal(events[0].status, 'active')
   emulators.resolve({ success: true })
   assert.equal((await service.whenIdle()).success, true)
-  assert.deepEqual(calls, ['app', 'emulators', 'install'])
+  assert.deepEqual(calls, ['app', 'emulators'])
   assert.equal(events.at(-1).status, 'completed')
+  assert.equal(events.at(-1).phase, 'ready-to-install')
   assert.equal(service.busy(), false)
 })
 
@@ -51,7 +48,6 @@ test('busy sessions create no task or update request', () => {
     canStart: () => false,
     checkApp: unexpected,
     updateEmulators: unexpected,
-    installApp: unexpected,
     report: unexpected
   })
   assert.equal(service.start().success, false)
@@ -72,7 +68,6 @@ test('provider failures still check the other provider and never restart over fa
         calls.push('emulators')
         return failing === 'emulators' ? { success: false, error: 'locked' } : { success: true }
       },
-      installApp: () => assert.fail('Must not restart'),
       report: (event) => events.push(event)
     })
     service.start()
@@ -84,21 +79,18 @@ test('provider failures still check the other provider and never restart over fa
   }
 })
 
-test('up-to-date results complete without restarting; install rejection is visible', async () => {
+test('up-to-date and downloaded results complete without invoking installation', async () => {
   for (const ready of [false, true]) {
     const events = []
     const service = createSoftwareUpdates({
       canStart: () => true,
       checkApp: async () => ({ success: true, ready }),
       updateEmulators: async () => ({ success: true, upToDate: true }),
-      installApp: () => {
-        assert(ready)
-        return { success: false, error: 'installation unavailable' }
-      },
       report: (event) => events.push(event)
     })
     service.start()
-    assert.equal((await service.whenIdle()).success, !ready)
-    assert.equal(events.at(-1).status, ready ? 'failed' : 'completed')
+    assert.deepEqual(await service.whenIdle(), { success: true, ready })
+    assert.equal(events.at(-1).status, 'completed')
+    assert.equal(events.at(-1).phase, ready ? 'ready-to-install' : 'finished')
   }
 })

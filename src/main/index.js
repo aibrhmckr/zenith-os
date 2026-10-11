@@ -48,6 +48,7 @@ const downloads = createDownloadCenter({
   }
 })
 let applicationUpdater = null
+let applicationUpdateFallback = { status: app.isPackaged ? 'idle' : 'developer', ready: false }
 let updateTimer = null
 let emulatorUpdate = null
 let softwareUpdates = null
@@ -1281,6 +1282,11 @@ app.whenReady().then(
      */
     ipcMain.handle('downloads:list', () => downloads.snapshot())
     ipcMain.handle('downloads:clear-history', () => downloads.clearHistory())
+    // Snapshot survives clearing notifications and reopening Settings; development never loads the provider.
+    ipcMain.handle(
+      'app-update:status',
+      () => applicationUpdater?.snapshot() || applicationUpdateFallback
+    )
     ipcMain.handle('updates:check', () => {
       if (!app.isPackaged) return { success: true, developer: true, upToDate: true }
       if (!applicationUpdater)
@@ -1290,6 +1296,14 @@ app.whenReady().then(
     })
     ipcMain.handle(
       'updates:install',
+      (_event, options) =>
+        applicationUpdater?.install(options?.confirmed) || {
+          success: false,
+          error: 'No update is ready.'
+        }
+    )
+    ipcMain.handle(
+      'app-update:quit-and-install',
       (_event, options) =>
         applicationUpdater?.install(options?.confirmed) || {
           success: false,
@@ -1360,7 +1374,6 @@ app.whenReady().then(
             'Zenith updates require an installed release. Installed emulators are still checked.'
         },
       updateEmulators: startEmulatorUpdate,
-      installApp: () => applicationUpdater.install(true),
       report: downloads.report
     })
     ipcMain.handle('software:update', () => softwareUpdates.start())
@@ -1648,11 +1661,23 @@ app.whenReady().then(
           updater: module.autoUpdater || module.default.autoUpdater,
           downloads: { report: reportDownload },
           enabled: true,
-          canInstall: () => !launchInProgress && !rpcs3Job && !emulatorUpdate && !cores.busy()
+          publish: (channel, state) => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, state)
+          },
+          canInstall: () =>
+            !launchInProgress &&
+            !activeChild &&
+            !rpcs3Job &&
+            !emulatorUpdate &&
+            !cores.busy() &&
+            !softwareUpdates?.busy()
         })
         updateTimer = setTimeout(() => void applicationUpdater.check(), 20000)
         updateTimer.unref()
       } catch (error) {
+        applicationUpdateFallback = { status: 'error', ready: false, message: error.message }
+        if (mainWindow && !mainWindow.isDestroyed())
+          mainWindow.webContents.send('app-update:error', applicationUpdateFallback)
         reportDownload({
           id: 'zenith-update',
           name: 'Zenith OS',

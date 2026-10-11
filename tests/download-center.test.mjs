@@ -136,7 +136,7 @@ test('updater coalesces checks, stages differential downloads and requires an id
   await Promise.resolve()
   assert.equal(calls, 1)
   assert.equal(updater.disableDifferentialDownload, false)
-  assert.equal(updater.autoInstallOnAppQuit, false)
+  assert.equal(updater.autoInstallOnAppQuit, true)
   updater.emit('download-progress', { transferred: 45, total: 100, percent: 45 })
   assert.equal(events.at(-1).received, 45)
   updater.emit('update-downloaded', { version: '1.0.1' })

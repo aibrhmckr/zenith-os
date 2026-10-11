@@ -1226,6 +1226,14 @@ düğmesi odağı devralır.
 | `downloads:progress` | `onDownloadsProgress(callback)` | Main → renderer görev dizisi; unsubscribe fonksiyonu döner. |
 | `updates:check` | `checkUpdates()` | `{success,error?}`; kabul edilen kontrol/indirme arka planda sürer. |
 | `updates:install` | `installUpdate(true)` → `{confirmed:true}` | Hazır güncelleme + boş emülatör oturumu/bakım kontrolünden sonra yeniden başlatır. |
+| `app-update:status` | `getAppUpdateState()` | Main belleğindeki OTA snapshot: `status`, `ready`, `version?`, `percent?`, `message?`. Bildirim geçmişinden bağımsızdır. Dev ortamında `developer`. |
+| `app-update:quit-and-install` | `quitAndInstallUpdate()` → `{confirmed:true}` | Hazır paket, bitmiş indirme ve boş oyun/bakım koşulları sağlanırsa `quitAndInstall(false,true)`; aksi halde `{success:false,error}`. |
+| `app-update:checking` | `onAppUpdate(callback)` | Main → renderer: `status:checking`; arayüz yerelleştirilmiş denetim mesajı gösterir. |
+| `app-update:available` | Aynı abonelik | `status:downloading`, `version`, `releaseDate`, `releaseNotes`. Notlar ham HTML olarak render edilmez. |
+| `app-update:not-available` | Aynı abonelik | `status:up-to-date`, `ready:false`. |
+| `app-update:progress` | Aynı abonelik | `percent`, `bytesPerSecond`, `transferred`, `total`, mevcut sürüm ve durum. |
+| `app-update:downloaded` | Aynı abonelik | `status:downloaded`, `ready:true`, `version`, `percent:100`. |
+| `app-update:error` | Aynı abonelik | `status:error`, `message`; UI URL/yol içerebilen ham sağlayıcı mesajını güvenli hata kategorisine çevirir. |
 | `software:update` | `updateSoftware()` | `{success,alreadyRunning?,error?}`; iki sağlayıcıyı arka planda denetler. İlerleme `downloads:progress` ile gelir. |
 | `emulators:update` | `updateEmulators()` | `{success,error?}`; yalnız kurulu çekirdekler ve Windows RPCS3 güncellenir. |
 
@@ -1262,15 +1270,22 @@ adaptörüdür. Paketli uygulama açılışından 20 saniye sonra kontrol eder; 
 oturumunda güncelleme başlatmaz. `electron-builder.yml` GitHub kaynağı
 `aibrhmckr/zenith-os`, release türü `release`, NSIS `differentialPackage=true`.
 Updater üretilen `app-update.yml` dosyasını kullanır; URL renderer'dan alınmaz.
-Otomatik indirme açıktır; otomatik kurulum/çıkışta kurulum kapalıdır. Kurulum
-yalnız Ayarlar’daki **Yazılım Güncelleme** eylemiyle ve oyun/bakım işi bittikten sonra yapılır.
+`hooks/useApplicationUpdate.js` altı yaşam döngüsü kanalına snapshot okunmadan
+önce abone olur. Daha yeni bir olay geldiyse geciken snapshot reddedilir; unmount
+altı listener'ı da kaldırır. `SystemSettings.jsx` OTA sürüm/yüzdesini birleşik
+emülatör ilerlemesi yanında gösterir. Kart hazır olduğunda sonraki A/Enter/tıklama
+yeniden başlatma onayıdır; bu durum panel kapatılınca veya geçmiş silinince kaybolmaz.
+Paketli sürümde otomatik indirme ve normal çıkışta kurulum açıktır
+(`autoDownload=true`, `autoInstallOnAppQuit=true`). İndirme bitmesi yeniden
+başlatmaz. Ayarlar kartındaki **Yeniden başlat ve güncellemeyi kur** eylemi,
+oyun/bakım işi yokken `quitAndInstall(false,true)` çağırır.
 
 `services/softwareUpdates.js` iki sağlayıcıyı `Promise.allSettled` ile birlikte
 çalıştırır. Bir sağlayıcı başarısız olsa da diğeri denetlenir. Tek aktif iş tekrarlı
 tıklamaları birleştirir, yeni oyun başlatmayı engeller ve durum/hataları Bildirimler’e
-yayınlar. Uygulama hazırsa ancak emülatör bakımı başarıyla bitince `install(true)`
-çağrılır; başlangıçtaki otomatik kontrol kendiliğinden yeniden başlatmaz. Geliştirme
-ortamında uygulama güncellemesinin bulunmaması açık hata olarak gösterilir, kurulu
+yayınlar. Uygulama hazırsa bakım sonunda `ready-to-install` sonucu yayınlanır;
+servis kendiliğinden `install(true)` çağırmaz. Geliştirme ortamında uygulama
+sağlayıcısı yüklenmez, GitHub sorgulanmaz ve `developer` durumu döner. Kurulu
 emülatörler yine kontrol edilir.
 
 Release hazırlanırken yeni sürümün installer'ı, `.blockmap` ve `latest.yml`
@@ -1278,6 +1293,15 @@ birlikte yayınlanmalı, önceki release dosyaları korunmalıdır. Değişen bl
 indirilmeye çalışılır; eski paket/blockmap kullanılamıyorsa electron-updater tam
 indirmeye dönebilir. Delta indirme her ortamda garanti değildir. Bu değişiklik
 GitHub'a release yayınlamaz ve gerçek sürümler arası kurulum testi yerine geçmez.
+`npm run release`, `prerelease` üzerinden önce Vite çıktısını hazırlar ve
+`electron-builder --publish always` çalıştırır. Yayıncı erişimi yalnız geliştirme/CI
+ortamındaki `GH_TOKEN` ile sağlanır; son kullanıcıya token gömülmez. Sürüm yayınından
+önce `package.json`/lock sürümünü artırın. Doğrulama için `npm run test:app-updates`
+servis birim testleri ve gerçek Electron/Preload/React UI testini çalıştırır; UI testi
+sahte release sağlayıcısı kullandığından dosya indirme veya kurulum yapmaz.
+`tests/application-updater.test.mjs`, gerçek NSIS updater'ın normal çıkış kancasını
+sahte installer ile de sınar. `tests/dev-renderer.cjs`, Vite geliştirme ortamında
+`developer` snapshot, ağsız kontrol ve kurulum reddini doğrular.
 Bkz. [electron-builder güncelleme belgeleri](https://www.electron.build/auto-update.html).
 
 `coreManager.installNamed(name,true)` yeni doğrulanmış core'u aynı aktif cores
@@ -1663,8 +1687,8 @@ oyun/duvar kâğıdı/PUP/PKG seçimini kapsar.
   legal footer. Status modals reserve 40 px bottom scroll padding.
 - `applicationUpdater.js` and `softwareUpdates.js` receive Electron's app object.
   `app.isPackaged === false` bypasses application release lookup/install, including
-  the legacy `updates:check` IPC. Emulator checks still run. No new IPC channel is
-  needed: `downloads:progress` carries the aggregate task's `component`,
+  the legacy `updates:check` IPC. Emulator checks still run. `app-update:*` carries
+  the independent OTA lifecycle; `downloads:progress` carries the aggregate task's `component`,
   `componentPercent`, `completedComponents`, `totalComponents`, and `developer`.
   Main's `reportDownload` routes individual maintenance provider events into that
   aggregate. `DownloadCenter` hides the active aggregate; Settings displays it,

@@ -667,11 +667,30 @@ no update controls.
 Packaged releases check `aibrhmckr/zenith-os` on GitHub in the background using
 `electron-updater`. Publish the versioned NSIS installer, its `.blockmap` and
 `latest.yml` together and retain earlier artifacts for differential downloads.
-A full download remains the fallback when delta data is unavailable. Installation
-is authorized by **Settings → Software Update** and requires an idle
-emulator/maintenance state. Automatic startup checks only stage downloads;
-closing Zenith alone does not install an update. Development sessions do not
-contact the release feed.
+A full download remains the fallback when delta data is unavailable. Installed
+releases check automatically 20 seconds after startup and download available
+updates in the background. **Settings → Software Update** shows the version and
+live download percentage. Once staged, the card becomes **Update Ready**:
+activate **Restart & install update** to install immediately when no game or
+maintenance operation is running. Otherwise, the staged update installs on the
+next normal application quit (`autoInstallOnAppQuit=true`). Download completion
+alone never restarts the application. Development sessions do not contact the
+release feed and show **Developer Build (Up to date)**.
+
+OTA state is independent of notification history: clearing notifications or
+reopening Settings cannot lose the staged installer status. Preload subscribes
+to the six `app-update:*` lifecycle events and reads `app-update:status` for an
+initial snapshot; `app-update:quit-and-install` is the explicit restart action.
+
+To publish a release, increment the package version and run `npm run release`
+from the intended build host with a GitHub release token supplied through the
+environment (`GH_TOKEN`, never checked into source). The `prerelease` script
+builds Main, Preload and Renderer first. Electron Builder then packages and
+publishes to `aibrhmckr/zenith-os` as a non-draft release. On Windows this generates
+the NSIS installer, `.blockmap` and `latest.yml`; upload/preserve all three assets.
+Use `npm run build` followed by `npx electron-builder --win nsis --x64 --publish never`
+to validate packaging without publishing. A real upgrade requires two installed
+release versions; source/UI tests use a fake release provider and do not publish.
 
 **Software Update** checks both the application and installed emulators in one
 background operation (`software:update`). Repeated clicks reuse the running job.
@@ -679,8 +698,8 @@ The Settings card shows live component progress and checked/updated counts.
 Development builds skip application installers and report **Developer Build (Up to date)**
 while still checking installed emulators. Individual maintenance downloads feed this
 tracker; Notifications receives one final success or failure summary.
-Application installation/restart waits for successful emulator maintenance; any
-provider failure remains visible in Notifications. The operation refreshes
+Application installation/restart is a separate user action after maintenance;
+any provider failure remains visible in Settings and Notifications. The operation refreshes
 installed Libretro cores and Windows RPCS3 binaries
 while preserving configuration, firmware, virtual disks and saves. It cannot run
 alongside a game. Windows RPCS3 launch retains Zenith's loading mask until the

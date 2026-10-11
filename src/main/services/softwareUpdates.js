@@ -1,9 +1,8 @@
-/** One explicit settings action checks both providers; restart happens only after emulator writes finish. */
+/** Check both providers together; stage application updates without forcing an immediate restart. */
 export function createSoftwareUpdates({
   canStart,
   checkApp,
   updateEmulators,
-  installApp,
   report,
   app = { isPackaged: true }
 }) {
@@ -30,17 +29,13 @@ export function createSoftwareUpdates({
     )
     const failed = outcomes.find((result) => !result?.success)
     if (failed) throw Error(failed.error || 'Update failed.')
-    if (outcomes[0].ready) {
-      const installed = await installApp()
-      if (!installed.success) throw Error(installed.error)
-    }
     publish({
       status: 'completed',
-      phase: outcomes[0].ready ? 'installing' : 'finished',
+      phase: outcomes[0].ready ? 'ready-to-install' : 'finished',
       error: null,
       percent: 100
     })
-    return { success: true }
+    return { success: true, ready: Boolean(outcomes[0].ready) }
   }
   // Provider events are transient detail for Settings, not individual notification cards.
   const progress = (value) => {
