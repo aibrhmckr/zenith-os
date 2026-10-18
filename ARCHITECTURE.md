@@ -37,7 +37,7 @@ flowchart TB
 | Katman    | Teknoloji / görev                                                                                                                             |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Ana süreç | Electron 39; Node `fs`, `child_process`, `path`, `crypto`, `zlib`; pencere, IPC, dosya ve emülatör yaşam döngüsü.                             |
-| Köprü     | `@electron-toolkit/preload` ve Electron `contextBridge`. Uygulama metotları Promise tabanlıdır.                                               |
+| Köprü     | Electron `contextBridge` ve dar uygulama köprüsü. Uygulama metotları Promise tabanlıdır.                                               |
 | Renderer  | React 19, JavaScript/JSX; merkezi App state, küçük özel hook'lar; Redux/Zustand yok.                                                          |
 | Derleme   | electron-vite 5; Vite 7 + React eklentisi; ana süreç, preload ve renderer ayrı çıktılar.                                                      |
 | Stil      | Tailwind CSS 4, `@tailwindcss/postcss`; `main.css` içinde konsol stili ve değişkenler.                                                        |
@@ -53,25 +53,25 @@ Electron 39.8.10, Vite 7.3.6 ve React 19.3.0 ile doğrulandı.
 
 - `createWindow()` açıkça `contextIsolation: true`, `nodeIntegration: false`
   ayarlar. React doğrudan `fs`, `spawn` veya `require` kullanmaz.
-- Preload `sandbox: false` ile çalışır; bu, renderer Node entegrasyonunun açık
-  olduğu anlamına gelmez. Chromium renderer sandbox'ı bakımından bu bir sınırlamadır.
+- Preload ve renderer `sandbox: true` ile çalışır; worker Node entegrasyonu da kapalıdır.
 - `window.electronAPI` uygulamanın dar amaçlı sözlüğüdür. `window.api = {}` boş
-  şablondur. `window.electron` ise toolkit'in genel Electron köprüsünü de sunar;
-  bu nedenle yalnızca dar uygulama metotlarının expose edildiği iddia edilmemelidir.
-- Preload context isolation kapalıysa doğrudan `window` atayan bir geliştirme
-  fallback'i taşır; üretimde izolasyonu kapatmayın.
+  şablondur. `window.electron` yalnız `process.versions` kopyasını sunar;
+  genel IPC, ortam değişkenleri ve izolasyonsuz fallback kaldırılmıştır.
 - `src/renderer/index.html` CSP'si uzak scriptleri engeller, görsel ve sesi
   `self`, `game-cover:`, `game-media:` kaynaklarından alır. Uzak HTML renderer'a
   yerleştirilmez. Dış bağlantılar Main `setWindowOpenHandler` → `shell.openExternal`
-  yoluyla açılır; uygulama içerisine yeni web penceresi alınmaz.
+  yoluyla yalnız kimlik bilgisi içermeyen HTTP/HTTPS adresleri için açılır.
+  Yeni pencere, belge/frame gezinmesi, yönlendirme, webview ve izin talepleri engellenir.
 - Main oyun yolunu kütüphaneyle doğrular; çekirdek ismini renderer'dan bir komut
   veya URL olarak kullanmaz. Çekirdek seçiminde katalog/yerel kurulum üyeliği,
   dosya adı ve host uzantısı denetlenir. `spawn` shell açmaz.
 - `game-media` yalnızca Main tarafından kayıt edilmiş URL/dosya eşleşmelerini
   sunar; renderer'ın keyfi `file://` yolu okuması için genel bir endpoint yoktur.
-- Bu kontroller teknik sınırlardır; indirilen içeriğin lisansını veya BIOS'un
-  gerçekliğini kanıtlamaz. Mevcut IPC'de ayrıca frame/origin yetkilendirme katmanı
-  yoktur; renderer'a uzaktan uygulama yüklenmemesi bu mimarinin önemli varsayımıdır.
+- Tüm Main IPC handler'ları gerçek ana pencerenin webContents, mainFrame ve
+  beklenen belge URL'sini doğrular. Dosya gezgini yalnız izin verilen köklerde
+  çalışır; yol ve realpath denetimi junction üzerinden dışarı çıkmayı da reddeder.
+- Bu kontroller içeriğin lisansını veya BIOS'un gerçekliğini kanıtlamaz;
+  yerel kullanıcıya karşı işletim sistemi düzeyinde bir güvenlik sınırı değildir.
 
 ### Pencere yaşam döngüsü ve çerçevesiz konsol modu
 
@@ -84,7 +84,7 @@ Windows başlık çubuğu ve yerel büyüt/küçült/kapat kontrolleri çizilmez
 Geliştirme ve paketli sürüm aynı pencere seçeneklerini kullanır.
 
 `contextIsolation: true`, `nodeIntegration: false`, preload yolu ve mevcut
-`sandbox: false` ayarı korunur. Tam ekran için yeni IPC veya renderer yetkisi yoktur.
+`sandbox: true` ayarı kullanılır. Tam ekran için yeni IPC veya renderer yetkisi yoktur.
 `Alt+F4`, işletim sistemi görev değiştirme ve sistem tuşları genel olarak engellenmez;
 Electron kiosk modu etkin olsa da bu bir Windows güvenlik kilidi değildir. Escape/F10 veya yapılandırılmış
 kombinasyon → ana menü → `quit-app` normal çıkış yoludur.
@@ -171,7 +171,7 @@ mevcut değildir; bu sorumluluklar bugün `index.js` içindedir. `bgm.js` yerine
 
 | Dosya                    | Sorumluluk                                                                                                                                                                                                                                                                               |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/preload/index.js`   | Uygulama invoke metotları ve unsubscribe döndüren event abonelikleri. Tam metot/parametre listesi bölüm 3'tedir. `window.api` boş, `window.electronAPI` gerçek uygulama API'si, `window.electron` toolkit köprüsüdür.                                                                    |
+| `src/preload/index.js`   | Uygulama invoke metotları ve unsubscribe döndüren event abonelikleri. Tam metot/parametre listesi bölüm 3'tedir. `window.api` boş, `window.electronAPI` gerçek uygulama API'si, `window.electron` yalnız sürüm bilgisi içerir.                                                                    |
 | `src/shared/consoles.js` | Konsol–uzantı tablosu ve iki dosya seçici filtresi. Importer, scanner, library ve renderer aynı tabloyu kullanır. Saf isim/uzantı ipuçları; Main discInspector ve kalıcı oyun seçimi nihai platformu belirler. SMD→Genesis, V64→N64, A26/A78/LNX→Atari; BIN/ROM/ATX/ZIP/7z `Unassigned`. |
 | `src/shared/hotkeys.js`  | Varsayılan `[8,9]`, klavye default `[]` (Esc/F10); tuş adı/Windows sanal kod dönüşümü, farklı iki tuş doğrulaması ve `createGamepadHotkey`. Modalda tüketilen basışın bırakılma eylemini ana ekrana sızdırmaz.                                                                           |
 
@@ -190,7 +190,7 @@ mevcut değildir; bu sorumluluklar bugün `index.js` içindedir. `bgm.js` yerine
 | `components/OnScreenKeyboard.jsx` | `{value,onChange,onClose}` kontrollü metin; TR/EN layout, symbols, 2D position, caret/selection, editing. iOS üç harf satırı, Backspace ve alt fonksiyon satırı. String'in seçilen bölümünü değiştirir; B/Menu/Done kapatır. Ayrı VirtualKeyboard dosyası yok.                                                     |
 | `components/GuideDrawer.jsx`      | `{game,onClose}`; lore/manual/features/loading, tab/page/pageResult, page-cache ve scroll ref. İki sekme, LB/RB sınırlandırılmış, right-stick/dikey D-pad scroll, yatay sayfa çevirme; remote HTML göstermez.                                                                                                      |
 | `components/InputHint.jsx`        | `InputHint({keyboard,gamepad,children})`, `KeyBadge({keyboard,gamepad})`; InputContext'e göre keyboard veya renkli Xbox rozeti. Yerel state yok.                                                                                                                                                                   |
-| `components/Versions.jsx`         | Şablon kalıntısı; props yok, toolkit'ten versions state'i. Aktif dashboard tarafından import edilmez.                                                                                                                                                                                                              |
+| `components/Versions.jsx`         | Şablon kalıntısı; props yok, preload'dan versions state'i. Aktif dashboard tarafından import edilmez.                                                                                                                                                                                                              |
 
 ### Renderer hook'ları, state ve varlıklar
 
@@ -310,18 +310,12 @@ Her invoke bir Promise döndürür; tabloda Promise'ın çözümlenen değeri ya
 Bunların karşılıkları sırasıyla add-games, get-system-status/launch-game ve
 install-core/select-core'dur. Uygulamada `ipcMain.on` ile ayrı request kanalı yoktur.
 
-### Toolkit köprüsünün mevcut ek yüzeyi
+### Preload'un sınırlı ek yüzeyi
 
-Uygulama API'sine ek olarak window.electron şu toolkit üyelerini expose eder:
-`ipcRenderer.send(channel,...args)`, `sendSync(channel,...args)`,
-`sendToHost(channel,...args)`, `postMessage(channel,message,transfer)`,
-`invoke(channel,...args)`, `on(channel,listener)`, `once(channel,listener)`,
-`removeListener(channel,listener)`, `removeAllListeners(channel)` ve
-`sendTo(webContentsId,channel,...args)` (Electron >=28'de hata fırlatır).
-`webFrame.insertCSS(css)`, `setZoomFactor(factor)`, `setZoomLevel(level)`;
-`webUtils.getPathForFile(file)`; `process.platform`, `process.versions`,
-`process.env` getter'ları da mevcuttur. Bunlar yeni Main handler kayıtları değildir;
-özellikle env ve genel IPC yüzeyi ileride köprüyü daraltırken gözden geçirilmelidir.
+`window.electron.process.versions` yalnız sürüm göstergesi için düz bir kopyadır.
+Genel `ipcRenderer`, `webFrame`, `webUtils` veya `process.env` expose edilmez.
+Uygulama işlemleri yalnız `window.electronAPI` içindeki sabit kanallı metotlardan
+geçer; abonelikler Electron event nesnesini renderer'a aktarmadan unsubscribe döndürür.
 
 ### Main → Renderer olayları
 
@@ -1521,7 +1515,7 @@ korumasını gerçek Electron/Main/preload/React hattında doğrular.
 
 | Dosya | Sorumluluk |
 | --- | --- |
-| src/main/services/fileBrowser.js | Asenkron yerel sürücü/klasör listesi; amaca göre uzantı filtresi; 250 kayıtlık sayfalar; 30 dakika geçerli, tek kullanımlık seçim tokenları. İçe almadan önce dosya türü, boyutu ve mtime yeniden doğrulanır. Windows UNC, device ve ADS yolları reddedilir; symlink girdileri listelenmez. |
+| src/main/services/fileBrowser.js | İzin verilen köklerde asenkron klasör listesi; amaca göre uzantı filtresi; 250 kayıtlık sayfalar; 30 dakika geçerli, tek kullanımlık seçim tokenları. İçe almadan önce dosya türü, boyutu ve mtime yeniden doğrulanır. Windows UNC, device ve ADS yolları reddedilir; symlink girdileri listelenmez. |
 | src/renderer/src/components/FileBrowser.jsx | Tam ekran modal; D-pad/analog veya oklarla gezinme, A/Enter ile klasöre girme/dosya seçme, B/Esc ile üst klasör, X ile onay. En üst seviyede B veya Vazgeç kapatır. Yalnız üst modal girdiyi alır; kapanışta önceki odak korunur. |
 | src/renderer/src/hooks/useFilePicker.jsx | Seçim isteğini Promise ile içe aktarma çağrısına bağlar; iptal null döndürür ve dosya işlemi başlatmaz. |
 | src/main/services/restartSession.js | Yalnız sahip olunan emülatör sürecini sonlandırır; close ve önceki launch Promise temizliğini bekler. 10 saniyelik kapanma zaman aşımında yeni süreç başlatılmaz. |
@@ -1569,8 +1563,8 @@ dahili gezgin, seçim devamlılığı ve iki ardışık restart akışını kaps
 ### Üç panelli dosya gezgini (Split View)
 
 FileBrowser.jsx artık yüzde 22 hızlı erişim, yüzde 48 liste ve yüzde 30 önizleme
-oranlarında üç bağımsız panel kullanır. Main, Electron home/desktop/downloads
-yollarını (OneDrive yönlendirmeleri dahil) ve mevcut sürücüleri sağlar. Liste
+oranlarında üç bağımsız panel kullanır. Main yalnız onaylı kökleri ve Electron
+desktop/downloads yollarını (OneDrive yönlendirmeleri dahil) sağlar. Liste
 boyut, değiştirilme zamanı, tür, mevcut platform ipucu ve breadcrumb bileşenlerini
 döndürür. Genel ISO uzantısı tek başına PS2 rozeti oluşturmaz; bu gezgin listesi
 ISO disk denetimi yapmaz. Sayfalama 250 kayıttır ve önceki/sonraki sayfa desteklenir.
@@ -1644,9 +1638,9 @@ sınar; dosyalar sentetik, güncelleme IPC sonucu test çiftidir.
 
 ### Dosya gezgini klasör içerik özeti
 
-Gezgin ilk açılışta konumları sol panele alıp kullanıcı dizininin gerçek içeriğini
-orta panele yükler; hızlı erişim kısayolları dosya satırı olarak tekrarlanmaz. Üst
-dizinden sürücü seçimine dönüldüğünde orta panel konum seçme ipucu gösterir.
+Gezgin ilk açılışta onaylı konumları sol panele alır; kullanıcı bir konum seçince
+orta panel gerçek içeriği gösterir. Hızlı erişim kısayolları dosya satırı olarak
+tekrarlanmaz; kök konum seçimine dönüldüğünde konum seçme ipucu gösterilir.
 `fs.lstat` boyut ve değiştirilme tarihini sağlar; klasör boyutu yerine dosya listesi
 Klasör türünü gösterir, recursive toplam sağdaki detay kartındadır.
 
@@ -1705,3 +1699,135 @@ release guards and aggregate progress. Electron suites `navigation-cards.cjs`,
 `system-status.cjs`, `download-center.cjs`, `controller.cjs` and `console-os.cjs`
 cover rendering, details traversal, two-way scrolling, notification behavior,
 shared badges, input routing and session actions using isolated synthetic fixtures.
+
+
+## Güvenlik sınırları, donanım profili ve çökme teşhisi (Ekim 2026)
+
+### Dosyalar ve IPC
+
+| Dosya | Sorumluluk |
+| --- | --- |
+| `src/main/services/securityBoundary.js` | Ana pencere/belge/frame doğrulayan `secureIpcHandle`; HTTP(S) dış bağlantı politikası; gezinme ve izin engelleri; mutlak yol ve gerçek dosya sistemi kökü denetimi. |
+| `src/main/services/isoExtractionPolicy.js` | PS3 medya çıkarımı öncesi ISO/UDF listeleme, dosya/üye sayısı/boyut sınırları, bağlantı ve traversal reddi. |
+| `src/main/services/hardwareDetector.js` | Süre sınırlı, tekilleştirilmiş GPU sorgusu; aktif GPU sınıflandırması ve RPCS3 profil önerisi. |
+| `src/main/services/crashResilience.js` | Tek seferlik süreç kapanış yönetimi, sınırlı çıktı yakalama, neden sınıflandırma ve dönen çökme kayıtları. |
+| `src/renderer/src/components/HardwareStatus.jsx` | Sistem & Konsol Durumu içinde canlı GPU envanteri ve aktif profil; odaklanınca yenileme ve abonelik temizliği. |
+| `tests/security-audit.test.mjs` | IPC kimliği, güvenli URL ve kök/junction/ADS/traversal sınırları, ISO çıkarma politikası. |
+| `tests/hardware-resilience.test.mjs` | Sahte GPU kimlikleri, zaman aşımı, config koruması, süreç hata/exit/close tekilleştirme ve çökme günlükleri. |
+| `tests/security-hardware.cjs` | Gerçek Electron sandbox/preload sınırı, yabancı pencere IPC reddi, canlı donanım kartı ve sahte Vulkan çökmesinden odak geri kazanımı. |
+
+| Kanal | Preload metodu | Sonuç |
+| --- | --- | --- |
+| `hardware:get-status` | `getHardwareStatus()` | Promise: devices, classification, detected, activeKnown, profile, checkedAt ve isteğe bağlı unavailable. |
+| `hardware:changed` | `onHardwareChanged(callback)` | Main → renderer: aynı snapshot; disposer aboneliği kapatır. |
+
+Mevcut `launch-game` / `restart-session` sonucunda süreç hataları
+`{success:false,error,crash}` ile döner. `crash` güvenli hata sınıfını, çıkış
+kodunu ve sinyali taşır; tam süreç çıktısı renderer'a gönderilmez. `game-stopped`
+olayı ve pencere geri getirme işlemi hata durumunda da tamamlanır.
+
+### İzin verilen dosya kökleri
+
+Dahili dosya gezgini `gamesDirectory`, aktif RetroArch dizini, `userData`,
+Electron `app.getPath('desktop')` ve `app.getPath('downloads')` altında çalışır.
+RPCS3 çalışma dizini userData altında olduğundan kapsanır. Kullanıcı kök dizini
+ve C:/D: sürücülerinin tamamı gezilebilir değildir. Kökün üstüne çıkış ve kök
+sınırını aşan symlink/junction reddedilir; kökte `parent: null` döner.
+Dosya listeleme, önizleme, klasör özeti ve tek kullanımlık seçim tokenının
+kullanılması sırasında yol yetkisi tekrar denetlenir. BIOS için kullanıcının
+native seçiciyle açıkça verdiği dosya, genel renderer yol erişimi anlamına gelmez.
+
+Scraper ve ISO servisleri renderer'dan keyfi dosya/komut almaz: Main tarafında
+kütüphane kimliği üzerinden bulunan oyun yolunu kullanır. ISO medyası çıkarılmadan
+önce 7-Zip yalnız UDF veya ISO okuyucusuna zorlanır; yeniden adlandırılmış ZIP
+kabul edilmez. Listeleme 15 saniye ve 4 MiB çıktı ile sınırlıdır; hedef üyelerde
+20 MiB resim / 1 MiB metaveri, toplam 42 MiB ve 16 üye sınırı uygulanır.
+Çıkarılan çıktı ayrıca doğrulanır. Bunlar yerel native parser kusurlarını veya
+aynı işletim sistemi kullanıcısının yarış koşullarını tümüyle önleyen bir sandbox değildir.
+
+### GPU sınıflandırması ve RPCS3 ayarları
+
+`app.getGPUInfo('basic')` sorgusu, gerekirse ad bilgisi için `complete` sorgusuyla
+zenginleştirilir; toplam bekleme 3 saniyedir. Hata/zaman aşımı başlatmayı kilitlemez.
+AMD vendor ID tek başına harici GPU sayılmaz. Aktif olduğu açıkça bildirilmeyen
+harici kart yalnız envanterde görünür; güvenli fallback profili korunur.
+Bu sınıflandırma Electron'un gözlemidir: RPCS3'ün Vulkan adaptörünü seçmez ve
+VRAM kapasitesi veya oyun FPS ölçümü değildir.
+
+| RPCS3 YAML anahtarı | iGPU / bilinmeyen | Aktif dGPU |
+| --- | --- | --- |
+| Video / Resolution | 1280x720 | 1280x720 |
+| Video / Resolution Scale | 100 | 100 |
+| Core / SPU Block Size | Mega | Safe |
+| Video / Shader Precision | Low | High |
+| Video / Shader Mode | Async Recompiler (multi-threaded) | Async Recompiler (multi-threaded) |
+| Video / Disable On-Disk Shader Cache | false | false |
+
+RPCS3'ün gerçek anahtarı `Shader Precision` kullanılır; geçersiz bir
+`Shader Quality` anahtarı yazılmaz. Harici kart var diye çözünürlük yükseltilmez;
+güvenli yerel çözünürlük ve daha yüksek hassasiyet seçilir. Mevcut cache,
+save, ses ve diğer ayarlar korunur. Oyun bazlı RPCS3 ayarları global config'i
+geçersiz kılabilir; gerçek donanım/oyun uyumluluğu ayrıca ölçülmelidir.
+
+### Çökme kurtarma ve kayıt
+
+RPCS3 ve RetroArch stdout/stderr son 16 KiB'ı tutulur. `error`, `exit` ve
+`close` olayları aynı kapanışı birden çok kez tamamlamaz. Kullanıcının normal
+stop işlemi hata sayılmaz. GPU Device Lost, bellek yetersizliği ve eksik kütüphane
+ayrımı somut çıktı/çıkış koduna dayanır; bilinmeyen hata otomatik olarak GPU'ya
+yüklenmez. Windows kodları unsigned/hex olarak normalize edilir;
+`0xC0000409` yanlışlıkla `0xC0000005` access violation diye etiketlenmez.
+
+Kayıt `userData/logs/crash-report.log` içinde JSON satırlarıdır; 1 MiB'da tek
+`.1` yedeğine döner. Yazma hatası pencereyi geri getirmeyi engellemez. Günlükler
+süreç yolları içerebildiğinden hata raporu paylaşılmadan önce gözden geçirilmelidir.
+Electron GPU child-process çöküşleri de kaydedilip donanım durumu yenilenir.
+
+### Doğrulama ve bağımlılık bulguları
+
+```powershell
+node --test tests/*.test.mjs
+npm run lint
+npm run build
+npx electron tests/security-hardware.cjs
+npx electron tests/file-browser.cjs
+npx electron tests/launcher.cjs
+npx electron tests/rpcs3-launcher.cjs
+npm run test:dev-renderer
+```
+
+Gerçek Electron testleri izole geçici dizinler ve sahte emülatör süreçleri kullanır;
+gerçek GPU sürücüsü çökertilmez, kullanıcı oyunları değiştirilmez. Bu testler
+çökme sonrası pencere ve hata akışını doğrular, gerçek performansı garanti etmez.
+
+`npm-audit.json` ilk güvenlik çalışmasının tarihsel bağımlılık taramasıdır: 0 kritik,
+4 yüksek ve 8 orta düzey paket bulgusu. Yüksek sınıfta Electron, extract-zip,
+http-cache-semantics ve source-map-js bulunur. Electron devDependency olsa da
+paketli uygulamanın runtime'ıdır; bulgusu yalnız geliştirme riski sayılamaz.
+`npm audit fix --force` uygulanmamıştır: önerilen Electron ana sürüm geçişi ve
+transitif zincir güncellemeleri ayrı uyumluluk testi gerektirir. IPC/CSP sertleştirme
+bu bağımlılık bulgularını kapatılmış yapmaz. Kaynak denetimi güven sınırlarına
+odaklanır; tüm üçüncü taraf native parser'ların eksiksiz güvenlik ispatı değildir.
+
+18 Ekim 2026 bağımlılık düzeltmesi: Electron `42.11.15`, `source-map-js` `1.2.2`,
+`http-cache-semantics` `4.3.0` ve Electron'un resmi ZIP çıkarıcısı
+`@electron-internal/extract-zip` `1.0.5` kullanılır. Yamalanmış özgün sürümü olmayan
+`sprintf-js`, `global-agent` `4.1.3` override'ı ile bağımlılık ağacından çıkarılır.
+`package-lock.json` bu ağacı sabitler; eski `npm-audit.json` güncel sonucu temsil
+etmez. electron-builder'ın `@electron/get` 3.x sürümü korunur: global bir 5.x
+override'ı Got proxy/timeout ve hata yeniden deneme sözleşmesini bozar.
+`tests/dependency-security.test.mjs` source-map sınırları, ZIP yol containment,
+checksum/önbellek, proxy bootstrap, 503 yeniden deneme ve timeout davranışlarını
+gerçek yerel fikstürlerle denetler. Geliştirme ortamı Node >=22.12 gerektirir.
+
+Sınır: `http-cache-semantics` 4.3.0 npm advisory aralığının dışındadır, fakat izole
+policy testinde cookie nedeniyle sıfırlanan cache ömrü `max-stale` ile hâlâ
+aşılabilir. Bu nedenle audit sonucunu tüm upstream açıklarının kapandığı şeklinde
+yorumlamayın. Zenith'in varsayılan Got indirmelerinde ortak HTTP cache etkin
+değildir; checksum doğrulamalı artifact önbelleği ayrı mekanizmadır. Kimlik
+doğrulamalı indirmelere ortak HTTP cache eklemek bu sınırın yeniden incelenmesini
+gerektirir.
+
+Teknik referanslar: [Electron GPUInfo](https://www.electronjs.org/docs/latest/api/app#appgetgpuinfoinfotype),
+[RPCS3 yapılandırma anahtarları](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/Emu/system_config.h),
+[RPCS3 enum serileştirmesi](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/Emu/system_config_types.cpp).

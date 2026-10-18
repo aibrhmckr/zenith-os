@@ -158,7 +158,7 @@ export function createRpcs3Runtime({ userData, platform = process.platform }) {
    * gamePath against the library. PKG requires a separate installation workflow, never a boot attempt.
    * @param {string} gamePath - Absolute path of a recognized library ISO or intact USRDIR/EBOOT.BIN.
    */
-  function prepareLaunch(gamePath) {
+  function prepareLaunch(gamePath, hardware) {
     if (typeof gamePath !== 'string' || !present(gamePath))
       return { success: false, error: 'ps3_game_missing', platform: 'PS3' }
     if (extname(gamePath).toLowerCase() === '.pkg')
@@ -169,7 +169,7 @@ export function createRpcs3Runtime({ userData, platform = process.platform }) {
     if (!checked.ready)
       return { success: false, error: checked.error, platform: 'PS3', status: checked }
     try {
-      prepareRpcs3Config({ configDirectory, platform })
+      prepareRpcs3Config({ configDirectory, platform, hardware })
     } catch (error) {
       return {
         success: false,

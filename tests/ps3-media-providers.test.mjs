@@ -23,6 +23,11 @@ function fixture(t) {
   return userData
 }
 const quiet = { log() {} }
+const listing = {
+  stdout: ['ICON0.PNG', 'PIC1.PNG', 'PARAM.SFO', 'PS3_DISC.SFB']
+    .map((name) => `Path = PS3_GAME/${name}\nSize = 1024`)
+    .join('\n\n')
+}
 
 test('explicit rescrape retries an unreadable title ID despite cached images; SFB fallback normalizes it', async (t) => {
   const userData = fixture(t),
@@ -33,6 +38,7 @@ test('explicit rescrape retries an unreadable title ID despite cached images; SF
     userData,
     logger: quiet,
     executeImpl: async (_binary, args) => {
+      if (args[0] === 'l') return listing
       calls++
       const output = args.find((arg) => arg.startsWith('-o')).slice(2)
       fs.writeFileSync(path.join(output, 'ICON0.PNG'), png)
@@ -58,6 +64,7 @@ test('7-Zip uses temporary flat extraction, accepts valid members after Headers 
     userData,
     logger: { log: (message) => logs.push(message) },
     executeImpl: async (_binary, args) => {
+      if (args[0] === 'l') return listing
       assert.equal(args[0], 'e')
       assert(!args.includes('-so'))
       assert(args.includes('-r') && args.includes('-ssc-'))
@@ -86,6 +93,7 @@ test('partial artwork or title ID extraction silences UDF warnings from stderr/s
       userData,
       logger: { log: (message) => logs.push(message) },
       executeImpl: async (_binary, args) => {
+        if (args[0] === 'l') return listing
         const output = args.find((arg) => arg.startsWith('-o')).slice(2)
         fs.writeFileSync(
           path.join(output, member),
@@ -127,6 +135,7 @@ test('no extracted targets rejects even after a zero exit or with a title ID fil
       userData,
       logger: quiet,
       executeImpl: async (_binary, args) => {
+        if (args[0] === 'l') return listing
         output = args.find((arg) => arg.startsWith('-o')).slice(2)
         if (warning) throw Error('Headers Error')
       }
@@ -147,6 +156,7 @@ test('failed ISO extraction cleans its temporary tree and never publishes invali
     userData,
     logger: quiet,
     executeImpl: async (_binary, args) => {
+      if (args[0] === 'l') return listing
       output = args.find((arg) => arg.startsWith('-o')).slice(2)
       fs.writeFileSync(path.join(output, 'ICON0.PNG'), '<html>not an image</html>')
       throw Error('timeout')

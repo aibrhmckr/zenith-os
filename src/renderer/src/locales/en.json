@@ -257,5 +257,17 @@
   "deleteCardHelp": "Remove the game from your library and disk",
   "backCardHelp": "Return to the dashboard",
   "settingsCardHelp": "System and emulator configuration",
-  "quitCardHelp": "Safely exit the application"
+  "quitCardHelp": "Safely exit the application",
+  "hardwareTitle": "Graphics hardware",
+  "hardwareChecking": "Detecting graphics hardware…",
+  "hardwareUnknown": "GPU information unavailable — conservative profile",
+  "hardwareDedicated": "Dedicated GPU active",
+  "hardwareFallback": "Integrated GPU / fallback active",
+  "hardwareActive": "Active",
+  "hardwareAvailable": "Detected",
+  "hardwareProfileHelp": "RPCS3 uses a native 720p profile with asynchronous shaders and persistent caches. GPU identity is not a performance guarantee.",
+  "crash_gpu_driver": "The graphics driver stopped responding. Update the driver or reduce the game’s graphics settings.",
+  "crash_memory": "The emulator ran out of memory. Close other applications or reduce graphics settings.",
+  "crash_missing_library": "A required emulator library is missing. Repair or update the emulator.",
+  "crash_emulator_crash": "The emulator stopped unexpectedly. Diagnostic details were saved in logs/crash-report.log."
 }

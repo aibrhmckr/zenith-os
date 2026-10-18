@@ -80,26 +80,19 @@ app.once('browser-window-created', (_, win) => {
       await click('[data-wallpaper-page]')
       await click('[data-wallpaper-import]')
       await wait("!!document.querySelector('[data-file-location=desktop]')")
-      await wait('!!document.querySelector(\'[data-file-name="Desktop"]\')')
       assert.equal(
-        await ev(
-          `!![...document.querySelectorAll('[data-file-entry]')].find(b=>b.dataset.fileName===${JSON.stringify(root)})`
-        ),
+        await ev("!!document.querySelector('[data-file-location=home]')"),
         false,
-        'Home opens real contents without a duplicate shortcut row'
-      )
-      await click('[data-file-location=home]')
-      await wait(
-        '!!document.querySelector(\'[data-file-name="Desktop"]\') && !document.querySelector(\'[data-file-name="Desktop"]\').disabled'
+        'Broad home browsing is not granted'
       )
       assert.equal(await ev("document.querySelectorAll('[data-file-column]').length"), 3)
+      await click('[data-file-location=desktop]')
+      await wait('!!document.querySelector(\'[data-file-name="Forest.png"]\')')
       await pad(4)
       assert.equal(
         await ev("document.activeElement.closest('[data-file-column]').dataset.fileColumn"),
         '0'
       )
-      await pad(-1, 'down')
-      assert.equal(await ev('document.activeElement.dataset.fileLocation'), 'desktop')
       await pad(0)
       await wait('!!document.querySelector(\'[data-file-name="Forest.png"]\')')
       assert.equal(await ev('document.activeElement.dataset.fileName'), 'Empty')
@@ -242,7 +235,11 @@ app.once('browser-window-created', (_, win) => {
         'X confirms focused file'
       )
       await click('[data-wallpaper-import]')
-      await wait("!!document.querySelector('[data-file-entry]')")
+      await wait("!!document.querySelector('[data-file-location=desktop]')")
+      await click('[data-file-location=desktop]')
+      await wait("!!document.querySelector('[data-file-name=Summary]')")
+      await click('[data-file-name=Summary]')
+      await wait("!!document.querySelector('[data-file-name=Nested]')")
       const crumbs = await ev("document.querySelector('[data-file-breadcrumbs]').textContent")
       assert(crumbs.includes(' › '))
       assert(!crumbs.includes(','))

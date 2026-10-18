@@ -1,3 +1,4 @@
+import HardwareStatus from './HardwareStatus'
 /* eslint-disable react/prop-types -- Internal settings panel. */
 import { useEffect, useState } from 'react'
 import Rpcs3Status from './Rpcs3Status'
@@ -388,6 +389,7 @@ export default function SystemSettings({
       )}
       {systemPage && (
         <>
+          <HardwareStatus />
           <div className="system-status-list">
             {!systems.length && <p>{t('noSystems')}</p>}
             {systems.map(

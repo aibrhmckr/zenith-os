@@ -439,7 +439,11 @@ export default function App() {
             })
           else
             setOperationError(
-              result.platform === 'PS3' ? t(result.error) : result.error || t('error')
+              result.crash
+                ? t('crash_' + result.error)
+                : result.platform === 'PS3'
+                  ? t(result.error)
+                  : result.error || t('error')
             )
         }
       } catch {

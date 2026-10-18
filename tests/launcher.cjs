@@ -52,18 +52,8 @@ for (const action of ['hide', 'restore', 'focus']) {
   BrowserWindow.prototype[action] = () => windowActions.push(action)
 }
 const dialogs = []
-let deferDialog = false
-let dismissDialog
 dialog.showMessageBox = async (...args) => {
   dialogs.push(args.at(-1))
-  if (deferDialog) {
-    return new Promise((resolve) => {
-      dismissDialog = () => {
-        deferDialog = false
-        resolve({ response: 0 })
-      }
-    })
-  }
   return { response: 0 }
 }
 const spawns = []
@@ -272,14 +262,14 @@ async function checkLauncher(window) {
   call.child.emit('error', new Error('simulated ENOENT'))
   result = await finish(call.child, -2)
   assert.equal(result.success, false)
-  assert.match(result.error, /simulated ENOENT/)
-  assert.equal(dialogs.length, beforeErrorDialogs + 1)
+  assert.equal(result.error, 'emulator_crash')
+  assert.equal(dialogs.length, beforeErrorDialogs)
   assert.deepEqual(windowActions.slice(beforeErrorActions), ['restore', 'focus'])
   call = await begin()
   call.child.emit('spawn')
-  assert.match((await finish(call.child, 1)).error, /exited unexpectedly/)
+  assert.equal((await finish(call.child, 1)).error, 'emulator_crash')
   synchronousFailure = true
-  assert.match((await evaluate(launchCall())).error, /simulated spawn failure/)
+  assert.equal((await evaluate(launchCall())).error, 'emulator_crash')
   synchronousFailure = false
 
   // UI button, launch animation, Enter on a selected card, and held gamepad A.
@@ -330,18 +320,18 @@ async function checkLauncher(window) {
   count = spawns.length
   await evaluate("document.querySelector('[data-launch-game]').click()")
   await waitFor(() => spawns.length === count + 1)
-  deferDialog = true
   spawns.at(-1).child.emit('error', new Error('UI spawn failure'))
   spawns.at(-1).child.emit('close', -1, null)
   await overlayGone()
   assert.equal(await evaluate("document.querySelector('[data-launch-game]').disabled"), false)
-  dismissDialog()
   await waitFor(() =>
-    evaluate("document.querySelector('[role=alert]')?.textContent.includes('UI spawn failure')")
+    evaluate(
+      "document.querySelector('[role=alert]')?.textContent.includes('emulator stopped unexpectedly')"
+    )
   )
   assert(
     await evaluate(
-      "document.querySelector('[role=alert]').textContent.includes('UI spawn failure')"
+      "document.querySelector('[role=alert]').textContent.includes('emulator stopped unexpectedly')"
     )
   )
   assert.equal(await evaluate("document.querySelector('[data-launch-game]').disabled"), false)
@@ -352,13 +342,13 @@ async function checkLauncher(window) {
   await waitFor(() => spawns.length === count + 1)
   spawns.at(-1).child.emit('spawn')
   await overlayGone()
-  deferDialog = true
   spawns.at(-1).child.emit('close', 1, null)
   await overlayGone()
   assert.equal(await evaluate("document.querySelector('[data-launch-game]').disabled"), false)
-  dismissDialog()
   await waitFor(() =>
-    evaluate("document.querySelector('[role=alert]')?.textContent.includes('exited unexpectedly')")
+    evaluate(
+      "document.querySelector('[role=alert]')?.textContent.includes('emulator stopped unexpectedly')"
+    )
   )
   console.log(
     'PASS: PSP ISO launch, PS2/PS1 core fallback, stdout/stderr, spawn arguments, dialogs, concurrent launch guard, lifecycle, animation reset before dialog dismissal, retry, Enter and simulated gamepad A'

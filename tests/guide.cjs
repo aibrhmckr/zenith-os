@@ -159,7 +159,7 @@ async function run(window) {
   await evaluate(
     "window.pad={connected:true,axes:[0,0,0,0],buttons:Array.from({length:16},()=>({pressed:false}))}; window.padReads=0; Object.defineProperty(navigator,'getGamepads',{value:()=>{window.padReads++;return [window.pad]}}); undefined"
   )
-  await press(3, 450)
+  await press(2, 450)
   await waitFor("!!document.querySelector('[data-console-modal=options][open]')")
   await evaluate("document.querySelector('[data-open-guide]').click()")
   await waitFor("Boolean(document.querySelector('[data-guide-drawer][open]'))")
@@ -192,8 +192,19 @@ async function run(window) {
     'Left stick never switches tabs'
   )
   await evaluate("document.querySelector('#guide-panel-lore').scrollTo({top:0,behavior:'instant'})")
-  await press(13)
-  await waitFor("document.querySelector('#guide-panel-lore').scrollTop>0")
+  assert(
+    await evaluate(
+      "document.querySelector('#guide-panel-lore').scrollHeight>document.querySelector('#guide-panel-lore').clientHeight"
+    ),
+    'The scroll fixture must overflow at the current display resolution'
+  )
+  // Wait for this drawer's poller to consume the input, not an unrelated getGamepads reader.
+  await evaluate('window.pad.buttons[13].pressed=true')
+  try {
+    await waitFor("document.querySelector('#guide-panel-lore').scrollTop>0")
+  } finally {
+    await evaluate('window.pad.buttons[13].pressed=false')
+  }
   await evaluate('window.pad.axes[3]=-1')
   await waitFor("document.querySelector('#guide-panel-lore').scrollTop===0")
   await evaluate('window.pad.axes[3]=0')
@@ -245,7 +256,7 @@ async function run(window) {
   await waitFor("!document.querySelector('[data-guide-drawer]')")
   await key('h')
   await waitFor("Boolean(document.querySelector('[data-guide-drawer][open]'))")
-  await press(3)
+  await press(1)
   await waitFor("!document.querySelector('[data-guide-drawer]')")
 
   offline = true
@@ -278,8 +289,19 @@ const timeout = setTimeout(() => {
 }, 45000)
 app.once('browser-window-created', (_event, window) => {
   window.webContents.setBackgroundThrottling(false)
+  window.webContents.on('console-message', (_event, details) => {
+    if (details.level === 'error') console.error('Renderer:', details.message)
+  })
   window.webContents.once('did-finish-load', async () => {
     try {
+      // Bound this scroll fixture independently of the host monitor and kiosk window geometry.
+      window.webContents.enableDeviceEmulation({
+        screenPosition: 'desktop',
+        screenSize: { width: 1280, height: 720 },
+        viewSize: { width: 1280, height: 720 },
+        deviceScaleFactor: 1,
+        scale: 1
+      })
       await run(window)
       clearTimeout(timeout)
       app.exit(0)
@@ -287,7 +309,7 @@ app.once('browser-window-created', (_event, window) => {
       console.error(error)
       console.log(
         await window.webContents.executeJavaScript(
-          "JSON.stringify({reads:window.padReads,hidden:document.hidden,drawer:document.querySelector('[data-guide-drawer]')?.open,active:document.activeElement.outerHTML.slice(0,150)})"
+          "JSON.stringify({reads:window.padReads,hidden:document.hidden,drawer:document.querySelector('[data-guide-drawer]')?.open,scroll:document.querySelector('#guide-panel-lore')&&{height:document.querySelector('#guide-panel-lore').clientHeight,total:document.querySelector('#guide-panel-lore').scrollHeight},active:document.activeElement.outerHTML.slice(0,150)})"
         )
       )
       clearTimeout(timeout)

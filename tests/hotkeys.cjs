@@ -184,7 +184,12 @@ async function run(window) {
     zenithWindow:
       handle.length === 8 ? handle.readBigUInt64LE().toString() : String(handle.readUInt32LE())
   }
-  assert.deepEqual(JSON.parse(commands[0]), { pad: [4, 5], keys: [81, 69], ...nativeTarget })
+  assert.deepEqual(JSON.parse(commands[0]), {
+    pad: [4, 5],
+    keys: [81, 69],
+    watchReady: false,
+    ...nativeTarget
+  })
   const config = fs.readFileSync(spawnArgs.at(-1), 'utf8')
   for (const line of [
     'input_menu_toggle_gamepad_combo = "0"',
@@ -200,7 +205,12 @@ async function run(window) {
   ])
     assert(config.includes(line))
   await ev("window.electronAPI.saveHotkeys({gamepad:[8,9],keyboard:['KeyZ','KeyX']})")
-  assert.deepEqual(JSON.parse(commands.at(-1)), { pad: [8, 9], keys: [90, 88], ...nativeTarget })
+  assert.deepEqual(JSON.parse(commands.at(-1)), {
+    pad: [8, 9],
+    keys: [90, 88],
+    watchReady: false,
+    ...nativeTarget
+  })
   const beforeMenu = windowActions.length
   bridge.stdout.emit('data', 'ho')
   assert.equal(windowActions.length, beforeMenu, 'Wait for a complete bridge message')
@@ -223,7 +233,17 @@ async function run(window) {
   await ev("document.activeElement.blur();window.dispatchEvent(new Event('focus'));undefined")
   await wait("document.activeElement===document.querySelectorAll('[data-session-option]')[1]")
   await press(13)
+  assert.equal(
+    await ev("document.activeElement===document.querySelectorAll('[data-session-option]')[2]"),
+    true
+  )
+  await press(13)
   assert.equal(await ev("document.activeElement.hasAttribute('data-quit-app')"), true)
+  await press(12)
+  assert.equal(
+    await ev("document.activeElement===document.querySelectorAll('[data-session-option]')[2]"),
+    true
+  )
   await press(12)
   assert.equal(
     await ev("document.activeElement===document.querySelectorAll('[data-session-option]')[1]"),

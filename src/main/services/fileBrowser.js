@@ -1,5 +1,6 @@
+import { assertAllowedPath } from './securityBoundary.js'
 import fs from 'node:fs/promises'
-import { isAbsolute, resolve, dirname, extname, basename, parse, join } from 'node:path'
+import { isAbsolute, resolve, dirname, extname, basename, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { GAME_FILE_FILTERS, detectConsole } from '../../shared/consoles.js'
 import { WALLPAPER_EXTENSIONS, validWallpaperHeader, MAX_WALLPAPER_BYTES } from './wallpapers.js'
@@ -14,6 +15,10 @@ export function createFileBrowser({
   platform = process.platform,
   roots
 } = {}) {
+  const approvedRoots = [
+    ...new Set((roots || [home, desktop, downloads]).filter(Boolean).map((root) => resolve(root)))
+  ]
+  const authorize = (path) => assertAllowedPath(path, approvedRoots)
   const tickets = new Map()
   const folders = new Map()
   const summaries = createFolderSummary()
@@ -42,6 +47,7 @@ export function createFileBrowser({
     const ticket = tickets.get(token)
     if (!ticket || (kind && ticket.kind !== kind) || ticket.expires < Date.now())
       throw Error('File selection expired. Select it again.')
+    authorize(ticket.path)
     const stat = await fs.lstat(ticket.path)
     if (
       !stat.isFile() ||
@@ -67,18 +73,18 @@ export function createFileBrowser({
       (platform === 'win32' && (!/^[a-z]:[\\/]/i.test(value) || value.slice(2).includes(':')))
     )
       throw Error('Select a local directory.')
-    return resolve(value)
+    return authorize(value)
   }
   const directories = async () => {
-    const candidates =
-      roots ||
-      (platform === 'win32'
-        ? Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i) + ':\\')
-        : ['/', '/media', '/mnt'])
-    const values = [...new Set([home, desktop, downloads, ...candidates].filter(Boolean))]
+    const values = [...new Set([home, desktop, downloads, ...approvedRoots].filter(Boolean))]
     return (
       await Promise.all(
         values.map(async (path) => {
+          try {
+            authorize(path)
+          } catch {
+            return null
+          }
           const stat = await fs.lstat(path).catch(() => null)
           return stat?.isDirectory() && !stat.isSymbolicLink()
             ? directoryEntry(
@@ -107,6 +113,7 @@ export function createFileBrowser({
       const ticket = folders.get(token)
       if (!ticket || ticket.expires < Date.now())
         throw Error('Folder selection expired. Select it again.')
+      authorize(ticket.path)
       const stat = await fs.lstat(ticket.path)
       if (generation !== summaryRevision) return { canceled: true }
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('Folder is unavailable.')
@@ -197,12 +204,12 @@ export function createFileBrowser({
       )
       return {
         path,
-        parent: parse(path).root === path ? null : dirname(path),
+        parent: approvedRoots.includes(path) ? null : dirname(path),
         breadcrumbs: (() => {
           const result = []
           for (let current = path; ; current = dirname(current)) {
             result.unshift({ name: basename(current) || current, path: current })
-            if (dirname(current) === current) return result
+            if (approvedRoots.includes(current) || dirname(current) === current) return result
           }
         })(),
         entries: page.filter(Boolean),

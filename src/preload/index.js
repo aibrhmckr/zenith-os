@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
+const electronAPI = { process: { versions: { ...process.versions } } }
 
 // Custom APIs for renderer
 /**
@@ -126,6 +126,12 @@ const localGamesAPI = {
    * Read physical core and BIOS status for platforms currently represented in the library. Invokes
    * get-system-status; callers receive its Promise result.
    */
+  getHardwareStatus: () => ipcRenderer.invoke('hardware:get-status'),
+  onHardwareChanged: (callback) => {
+    const listener = (_event, status) => callback(status)
+    ipcRenderer.on('hardware:changed', listener)
+    return () => ipcRenderer.removeListener('hardware:changed', listener)
+  },
   getSystemStatus: () => ipcRenderer.invoke('get-system-status'),
   /**
    * Bring Zenith above an active emulator and notify the renderer to show its session panel.
@@ -333,8 +339,4 @@ if (process.contextIsolated) {
   } catch (error) {
     console.error(error)
   }
-} else {
-  window.electron = electronAPI
-  window.api = api
-  window.electronAPI = localGamesAPI
 }

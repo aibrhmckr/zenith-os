@@ -413,6 +413,29 @@ with a mocked emulator process and dialogs; it does not run actual ROMs.
 
 ### Install
 
+Use Node.js **22.12.0 or newer** (CI uses Node 22) and npm. Electron's current
+download and ZIP extraction tools require this minimum Node version.
+
+The lockfile pins Electron and security overrides. Use `npm ci` for reproducible
+installs. `source-map-js` is pinned to 1.2.2 and `http-cache-semantics` to 4.3.0.
+The unpatched `sprintf-js` dependency is removed through `global-agent` 4.1.3.
+electron-builder retains its compatible `@electron/get` 3.x downloader API;
+Electron uses its official `@electron-internal/extract-zip` 1.0.5 package instead
+of the unpatched `extract-zip` 2.x implementation. Do not restore the old dependency
+chain just to satisfy a transitive version range.
+
+Electron's installation downloader uses Fetch/Undici. For `npm ci` behind a proxy,
+set `ELECTRON_GET_USE_PROXY=true` along with `HTTP_PROXY` / `HTTPS_PROXY` and,
+if needed, `NO_PROXY`. electron-builder retains its Got-based proxy, timeout and
+retry behavior for packaging downloads.
+
+Security caveat: a clean npm audit is not proof that every upstream behavior is
+safe. In `http-cache-semantics` 4.3.0, security-zeroed cookie responses can still
+satisfy `max-stale` in an isolated policy test. Zenith does not enable Got's shared
+HTTP response cache; its artifact cache uses checksum validation. Do not enable
+shared HTTP caching for authenticated downloads without addressing that upstream
+behavior. `tests/dependency-security.test.mjs` covers the actual packaging path.
+
 ```bash
 $ npm install
 ```

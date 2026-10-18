@@ -1,3 +1,4 @@
+import { inspectIsoExtraction } from './isoExtractionPolicy.js'
 import fs from 'node:fs'
 import { join, extname, resolve, sep } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -91,12 +92,14 @@ export function createPs3IsoExtractor({ userData, executeImpl = execute, logger 
     let extractionError = null
     let extractedTargets = 0
     try {
+      const format = await inspectIsoExtraction(binary, game.path, executeImpl)
       try {
         // e flattens paths; -ssc- handles case differences and -r searches nested disc folders.
         await executeImpl(
           binary,
           [
             'e',
+            format,
             '-y',
             '-aos',
             '-p',

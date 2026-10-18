@@ -257,5 +257,17 @@
   "deleteCardHelp": "Oyunu kütüphaneden ve diskten kaldırın",
   "backCardHelp": "Ana ekrana dönün",
   "settingsCardHelp": "Sistem ve emülatör yapılandırması",
-  "quitCardHelp": "Uygulamadan güvenle çıkış yapın"
+  "quitCardHelp": "Uygulamadan güvenle çıkış yapın",
+  "hardwareTitle": "Grafik donanımı",
+  "hardwareChecking": "Grafik donanımı algılanıyor…",
+  "hardwareUnknown": "GPU bilgisi alınamadı — koruyucu profil",
+  "hardwareDedicated": "Dedicated GPU Aktif",
+  "hardwareFallback": "Integrated GPU / Fallback Aktif",
+  "hardwareActive": "Aktif",
+  "hardwareAvailable": "Algılandı",
+  "hardwareProfileHelp": "RPCS3, asenkron gölgelendirici ve kalıcı önbellek ile doğal 720p profili kullanır. GPU kimliği performans garantisi değildir.",
+  "crash_gpu_driver": "Ekran kartı sürücüsü yanıt vermeyi kesti. Sürücüyü güncelleyin veya grafik ayarlarını azaltın.",
+  "crash_memory": "Emülatör için yeterli bellek kalmadı. Diğer uygulamaları kapatın veya grafik ayarlarını azaltın.",
+  "crash_missing_library": "Gerekli bir emülatör kütüphanesi eksik. Emülatörü onarın veya güncelleyin.",
+  "crash_emulator_crash": "Emülatör beklenmedik şekilde kapandı. Teşhis ayrıntıları logs/crash-report.log dosyasına kaydedildi."
 }

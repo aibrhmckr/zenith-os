@@ -1,3 +1,4 @@
+import { rpcs3HardwareProfile } from './hardwareDetector.js'
 import fs from 'node:fs'
 import { dirname, join, resolve, relative, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -188,7 +189,7 @@ function isolatePads(root, inputRoot) {
  * Windows uses portable/config/; Linux uses portable/ directly. Only Windows has XInput.
  * @param {{configDirectory: string, platform: string}} options - Main-owned portable profile.
  */
-export function prepareRpcs3Config({ configDirectory, platform }) {
+export function prepareRpcs3Config({ configDirectory, platform, hardware }) {
   const configRoot = join(configDirectory, ...(platform === 'win32' ? ['config'] : []))
   const configFile = join(configRoot, 'config.yml')
   const before = read(configDirectory, configFile)
@@ -201,6 +202,11 @@ export function prepareRpcs3Config({ configDirectory, platform }) {
   const config = structuredClone(seed)
   for (const [section, values] of Object.entries(CACHE_SETTINGS)) {
     config[section] = { ...mapping(config[section] ?? {}, section), ...values }
+  }
+
+  if (hardware) {
+    for (const [section, values] of Object.entries(rpcs3HardwareProfile(hardware)))
+      config[section] = { ...config[section], ...values }
   }
 
   const updates = []

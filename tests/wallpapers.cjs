@@ -17,7 +17,7 @@ const image = path.join(root, 'My wallpaper.png')
 fs.writeFileSync(image, png)
 app.getAppPath = () => root
 const originalGetPath = app.getPath.bind(app)
-app.getPath = (name) => (name === 'home' ? root : originalGetPath(name))
+app.getPath = (name) => (['desktop', 'downloads'].includes(name) ? root : originalGetPath(name))
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
 BrowserWindow.prototype.show = () => {}
@@ -56,6 +56,8 @@ app.once('browser-window-created', (_, window) => {
     }
     const importWallpaper = async () => {
       await run("document.querySelector('[data-wallpaper-import]').click()")
+      await wait("!!document.querySelector('[data-file-location=desktop]')")
+      await run("document.querySelector('[data-file-location=desktop]').click()")
       await wait("!!document.querySelector('[data-file-browser] [data-file-entry]')")
       if (!chosen) {
         await run(

@@ -25,7 +25,8 @@ const pkg = path.join(root, 'games', 'Package.pkg')
 fs.writeFileSync(pkg, 'synthetic package')
 app.getAppPath = () => root
 const originalGetPath = app.getPath.bind(app)
-app.getPath = (name) => (name === 'home' ? root : originalGetPath(name))
+app.getPath = (name) =>
+  ['home', 'desktop', 'downloads'].includes(name) ? root : originalGetPath(name)
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('force-prefers-reduced-motion')
@@ -257,6 +258,8 @@ async function run(win) {
   fs.writeFileSync(picked, pup)
   const chooseFirmware = async () => {
     await click('[data-rpcs3-firmware]')
+    await wait("!!document.querySelector('[data-file-location=desktop]')")
+    await click('[data-file-location=desktop]')
     await wait("!!document.querySelector('[data-file-entry]')")
     await wait('!!document.querySelector(\'[data-file-name="PS3UPDAT.PUP"]\')')
     assert.equal(
@@ -323,6 +326,8 @@ async function run(win) {
   pkgBytes.write('UP0001-NPUB12345_00-FIXTURE0000000000', 0x30)
   fs.writeFileSync(picked, pkgBytes)
   await click('[data-rpcs3-package]')
+  await wait("!!document.querySelector('[data-file-location=desktop]')")
+  await click('[data-file-location=desktop]')
   await wait("!!document.querySelector('[data-file-entry]')")
   await wait('!!document.querySelector(\'[data-file-name="selected-game.pkg"]\')')
   await click('[data-file-name="selected-game.pkg"]')
@@ -429,14 +434,18 @@ async function run(win) {
   emulator.emit('exit', 1)
   emulator.emit('close', 1)
   await wait('window.result!==null')
-  assert.match((await ev('window.result')).error, /RPCS3 exited unexpectedly \(1\)/)
-  assert.equal(dialogs.length, 1, 'Exit + close handled once')
+  assert.equal((await ev('window.result')).error, 'emulator_crash')
+  assert.equal(
+    dialogs.length,
+    0,
+    'Runtime crashes use the React alert instead of a blocking native dialog'
+  )
   await ev(`window.result=null;void ${call}.then(r=>window.result=r);undefined`)
   await delay(100)
   emulator.emit('error', new Error('synthetic spawn failure'))
   emulator.emit('close', -1)
   await wait('window.result!==null')
-  assert.match((await ev('window.result')).error, /RPCS3 could not start/)
+  assert.equal((await ev('window.result')).error, 'emulator_crash')
   // The existing launch pipeline authorizes and boots the installed EBOOT directly.
   await ev(
     `window.result=null;void window.electronAPI.launchGame(${JSON.stringify(installedGame.path)},'PS3').then(r=>window.result=r);undefined`

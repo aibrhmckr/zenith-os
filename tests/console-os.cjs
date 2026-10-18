@@ -18,7 +18,7 @@ const rom = path.join(root, 'Imported Game.gba')
 fs.writeFileSync(rom, 'synthetic game')
 app.getAppPath = () => root
 const originalGetPath = app.getPath.bind(app)
-app.getPath = (name) => (name === 'home' ? root : originalGetPath(name))
+app.getPath = (name) => (['desktop', 'downloads'].includes(name) ? root : originalGetPath(name))
 app.setPath('userData', profile)
 app.disableHardwareAcceleration()
 const actions = []
@@ -113,6 +113,8 @@ async function run(window) {
   assert(await evaluate("document.documentElement.lang==='en'"))
   selection = { canceled: false, filePaths: [rom] }
   await click('[data-add-game]')
+  await wait("!!document.querySelector('[data-file-location=desktop]')")
+  await click('[data-file-location=desktop]')
   await wait("!!document.querySelector('[data-file-entry]')")
   assert.equal(await evaluate('document.activeElement.dataset.fileName'), 'emulators')
   assert(

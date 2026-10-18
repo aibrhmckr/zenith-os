@@ -1,8 +1,12 @@
+import { createHardwareDetector } from './services/hardwareDetector'
+import { createCrashReporter, watchEmulator } from './services/crashResilience'
+import { secureIpcHandle, hardenWebContents } from './services/securityBoundary'
 import { stopForRestart } from './services/restartSession'
 import { createFileBrowser } from './services/fileBrowser'
 import { createPreferences, mediaPreferences } from './services/preferences'
 import { app, shell, BrowserWindow, ipcMain, protocol, net, dialog, globalShortcut } from 'electron'
 import fs from 'node:fs'
+import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import { basename, dirname, extname, join, parse, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -39,6 +43,15 @@ import { createWallpaperManager } from './services/wallpapers'
 if (is.dev && process.env.ELECTRON_RENDERER_URL) {
   app.commandLine.appendSwitch('disable-http-cache')
 }
+
+const hardwareDetector = createHardwareDetector({
+  app,
+  publish: (status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('hardware:changed', status)
+  }
+})
+const crashReporter = createCrashReporter({ userData: app.getPath('userData') })
 
 const downloads = createDownloadCenter({
   userData: app.getPath('userData'),
@@ -600,7 +613,7 @@ async function launchGame(event, request) {
         (entry) => entry.path === request.gamePath && entry.systemShort === 'PS3'
       )
       if (!game) return { success: false, error: 'ps3_game_missing', platform: 'PS3' }
-      const plan = rpcs3.prepareLaunch(game.path)
+      const plan = rpcs3.prepareLaunch(game.path, await hardwareDetector.detect())
       if (!plan.success)
         return plan.error === 'rpcs3_config_failed' ? plan : { ...plan, status: rpcs3Status() }
       // Deliberately bypass RetroArch preparation, cores, BIOS and session.cfg for PS3.
@@ -780,16 +793,23 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
         mainWindow.focus()
       }
       // spawn takes the executable separately from its arguments; no shell quoting is needed.
-      const child = spawn(executable, args, {
-        cwd,
-        ...(env ? { env } : {}),
-        shell: false,
-        detached: true,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
+      let spawnError
+      let child
+      try {
+        child = spawn(executable, args, {
+          cwd,
+          ...(env ? { env } : {}),
+          shell: false,
+          detached: true,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      } catch (error) {
+        spawnError = error
+        child = new EventEmitter()
+      }
       activeChild = child
-      child.stdout.on(
+      child.stdout?.on(
         'data',
         /**
          * Handle data events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
@@ -798,7 +818,7 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
          */
         (data) => console.log(`[${label} stdout] ${data.toString()}`)
       )
-      child.stderr.on(
+      child.stderr?.on(
         'data',
         /**
          * Handle data events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
@@ -822,7 +842,11 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
         finished = true
         clearTimeout(startupTimer)
         activeChild = null
-        sessionBridge?.stop()
+        try {
+          sessionBridge?.stop()
+        } catch (error) {
+          console.warn('[Session cleanup]', error.message)
+        }
         sessionBridge = null
         sessionMenuOpen = false
         sessionAwaitingRender = false
@@ -839,11 +863,7 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
           resolve({ success: true })
           return
         }
-        try {
-          resolve(await showLaunchError(message))
-        } catch {
-          resolve({ success: false, error: message })
-        }
+        resolve({ success: false, error: message.reason || 'emulator_crash', crash: message })
       }
       child.once(
         'spawn',
@@ -851,18 +871,27 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
          * Handle spawn events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
          */
         () => {
-          sessionBridge = startSessionBridge(
-            child.pid,
-            join(__dirname, '../../resources/gamepad-bridge.ps1'),
-            () => {
-              openSessionMenu()
-            },
-            hotkeys,
-            mainWindow && !mainWindow.isDestroyed()
-              ? mainWindow.getNativeWindowHandle()
-              : undefined,
-            { watchReady: waitForRender, onReady: revealGame }
-          )
+          try {
+            sessionBridge = startSessionBridge(
+              child.pid,
+              join(__dirname, '../../resources/gamepad-bridge.ps1'),
+              () => {
+                openSessionMenu()
+              },
+              hotkeys,
+              mainWindow && !mainWindow.isDestroyed()
+                ? mainWindow.getNativeWindowHandle()
+                : undefined,
+              { watchReady: waitForRender, onReady: revealGame }
+            )
+          } catch (error) {
+            console.warn('[Input bridge]', error.message)
+            void crashReporter.record({
+              emulator: label,
+              reason: 'input_bridge',
+              error: error.message
+            })
+          }
           const menuDuringBoot = () => {
             openSessionMenu()
           }
@@ -882,31 +911,13 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
           )
         }
       )
-      child.once(
-        'error',
-        /**
-         * Handle error events for launchGame; lifecycle cleanup or a one-shot subscription controls how long this callback remains active.
-         *
-         * @param {*} error - Failure from the preceding operation.
-         */
-        (error) => {
-          void finish(`${label} could not start: ${error.message}`)
-        }
-      )
-      /**
-       * Treat a clean exit or an intentional kill as success; route unexpected exit codes/signals
-       * through the common finalizer.
-       *
-       * @param {number|string} code - Process exit code or normalized physical key code, depending on the handler.
-       * @param {string} signal - Optional child-process termination signal.
-       */
-      const onExit = (code, signal) => {
-        void finish(
-          code === 0 || child.killed ? null : `${label} exited unexpectedly (${signal || code}).`
-        )
-      }
-      child.once('exit', onExit)
-      child.once('close', onExit)
+      const sentinel = watchEmulator(child, {
+        label,
+        reporter: crashReporter,
+        hardware: hardwareDetector.snapshot(),
+        finish
+      })
+      if (spawnError) sentinel.fail(spawnError)
     }
   )
 }
@@ -915,6 +926,16 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
  * Create the isolated frameless fullscreen dashboard, reveal it when ready, and load Vite in
  * development or the packaged HTML in production.
  */
+const dashboardUrl = () =>
+  is.dev && process.env.ELECTRON_RENDERER_URL
+    ? process.env.ELECTRON_RENDERER_URL
+    : pathToFileURL(join(__dirname, '../renderer/index.html')).href
+const handleIpc = secureIpcHandle(
+  ipcMain,
+  () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
+  dashboardUrl
+)
+
 function createWindow() {
   // Fullscreen + no native frame removes title-bar controls without changing OS security policy.
   // Exit remains available through the Zenith menu (Escape/F10 or the configured chord).
@@ -931,8 +952,11 @@ function createWindow() {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       autoplayPolicy: 'no-user-gesture-required',
-      sandbox: false
+      sandbox: true
     }
   })
 
@@ -946,17 +970,7 @@ function createWindow() {
     }
   )
 
-  mainWindow.webContents.setWindowOpenHandler(
-    /**
-     * Open requested external links with the OS browser and deny a new embedded renderer window.
-     *
-     * @param {*} details - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-     */
-    (details) => {
-      shell.openExternal(details.url)
-      return { action: 'deny' }
-    }
-  )
+  hardenWebContents(mainWindow.webContents, (url) => shell.openExternal(url))
 
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
@@ -1034,49 +1048,55 @@ app.whenReady().then(
     /**
      * Read the normalized persistent keyboard/gamepad combination.
      */
-    ipcMain.handle('get-media-preferences', () => mediaPreferences(preferenceStore.get().media))
+    handleIpc('get-media-preferences', () => mediaPreferences(preferenceStore.get().media))
     const fileBrowser = createFileBrowser({
-      home: app.getPath('home'),
+      roots: [
+        gamesDirectory,
+        retroarchDir,
+        app.getPath('userData'),
+        app.getPath('desktop'),
+        app.getPath('downloads')
+      ],
       desktop: app.getPath('desktop'),
       downloads: app.getPath('downloads')
     })
-    ipcMain.handle('files:folder-summary', async (_event, token) => {
+    handleIpc('files:folder-summary', async (_event, token) => {
       try {
         return { success: true, ...(await fileBrowser.folderSummary(token)) }
       } catch (error) {
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('files:preview', async (_event, token) => {
+    handleIpc('files:preview', async (_event, token) => {
       try {
         return { success: true, ...(await fileBrowser.preview(token)) }
       } catch (error) {
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('files:list', async (_event, request) => {
+    handleIpc('files:list', async (_event, request) => {
       try {
         return { success: true, ...(await fileBrowser.list(request)) }
       } catch (error) {
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('wallpapers:list', () => wallpapers.list())
-    ipcMain.handle('wallpapers:delete', async (_event, options) => {
+    handleIpc('wallpapers:list', () => wallpapers.list())
+    handleIpc('wallpapers:delete', async (_event, options) => {
       try {
         return { success: true, wallpapers: await wallpapers.remove(options) }
       } catch (error) {
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('wallpapers:update', async (_event, patch) => {
+    handleIpc('wallpapers:update', async (_event, patch) => {
       try {
         return { success: true, wallpapers: await wallpapers.update(patch) }
       } catch (error) {
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('wallpapers:import', async (_event, token) => {
+    handleIpc('wallpapers:import', async (_event, token) => {
       try {
         const [file] = await fileBrowser.consume('wallpaper', [token])
         return { success: true, wallpapers: await wallpapers.importFile(file) }
@@ -1084,7 +1104,7 @@ app.whenReady().then(
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('save-media-preferences', async (event, patch) => {
+    handleIpc('save-media-preferences', async (event, patch) => {
       try {
         if (
           !patch ||
@@ -1112,14 +1132,14 @@ app.whenReady().then(
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('get-hotkeys', () => hotkeys)
+    handleIpc('get-hotkeys', () => hotkeys)
     /**
      * Normalize and atomically persist the combination, then update the running native bridge.
      *
      * @param {Object} _event - Electron invoke event; unused when no renderer notification is needed.
      * @param {*} value - Input value being normalized, displayed, or committed by this helper.
      */
-    ipcMain.handle('save-hotkeys', async (_event, value) => {
+    handleIpc('save-hotkeys', async (_event, value) => {
       try {
         const next = normalizeHotkeys(value)
         await preferenceStore.update({ hotkeys: next })
@@ -1133,7 +1153,7 @@ app.whenReady().then(
     /**
      * Stop an active emulator and quit Zenith through the normal Electron lifecycle.
      */
-    ipcMain.handle('quit-app', () => {
+    handleIpc('quit-app', () => {
       activeChild?.kill()
       app.quit()
       return { success: true }
@@ -1141,8 +1161,8 @@ app.whenReady().then(
     /**
      * Return current library records with local protocol URLs without waiting for network scraping.
      */
-    ipcMain.handle('get-local-games', () => getLocalGames())
-    ipcMain.handle('set-game-platform', (_event, { gameId, platform } = {}) => {
+    handleIpc('get-local-games', () => getLocalGames())
+    handleIpc('set-game-platform', (_event, { gameId, platform } = {}) => {
       try {
         if (launchInProgress || rpcs3Job || emulatorUpdate)
           throw Error('Stop the running game or setup first.')
@@ -1159,7 +1179,7 @@ app.whenReady().then(
     /**
      * Consume validated file-browser selections and copy them to the central library.
      */
-    ipcMain.handle('add-games', async (_event, tokens) => {
+    handleIpc('add-games', async (_event, tokens) => {
       try {
         const selection = { filePaths: await fileBrowser.consume('games', tokens) }
         const packages = selection.filePaths.filter(
@@ -1190,7 +1210,7 @@ app.whenReady().then(
      * @param {Object} _event - Electron invoke event; unused when no renderer notification is needed.
      * @param {string} gameId - Stable library/media identity; Main resolves or validates it before accessing files.
      */
-    ipcMain.handle('delete-game', async (_event, gameId) => {
+    handleIpc('delete-game', async (_event, gameId) => {
       if (launchInProgress) return { success: false, error: 'Stop the running game first.' }
       const game = guideGame(gameId)
       if (!game || deleting.has(gameId)) return { success: false, error: 'Game unavailable.' }
@@ -1224,7 +1244,7 @@ app.whenReady().then(
     /**
      * List the trusted official/verified-local core catalog, including offline fallback status.
      */
-    ipcMain.handle('list-cores', () => coreCatalog.list())
+    handleIpc('list-cores', () => coreCatalog.list())
     /**
      * Validate the game/platform target and catalog member, install it, and persist the selection
      * only on success.
@@ -1235,7 +1255,7 @@ app.whenReady().then(
      * @param {string} options2.platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
      * @param {*} options2.core - Input used by this helper; see its operation contract above.
      */
-    ipcMain.handle('select-core', async (_event, { gameId, platform, core } = {}) => {
+    handleIpc('select-core', async (_event, { gameId, platform, core } = {}) => {
       try {
         const preparationError = await retroarchPreparation
         if (preparationError) throw preparationError
@@ -1265,7 +1285,7 @@ app.whenReady().then(
      * @param {Object} _event - Electron invoke event; unused when no renderer notification is needed.
      * @param {string} system - Console ID from the shared platform registry.
      */
-    ipcMain.handle('install-core', async (_event, system) => {
+    handleIpc('install-core', async (_event, system) => {
       try {
         if (launchInProgress || emulatorUpdate)
           throw Error('Stop the game or wait for emulator updates.')
@@ -1280,21 +1300,21 @@ app.whenReady().then(
     /**
      * Read physical core and BIOS status for platforms currently represented in the library.
      */
-    ipcMain.handle('downloads:list', () => downloads.snapshot())
-    ipcMain.handle('downloads:clear-history', () => downloads.clearHistory())
+    handleIpc('downloads:list', () => downloads.snapshot())
+    handleIpc('downloads:clear-history', () => downloads.clearHistory())
     // Snapshot survives clearing notifications and reopening Settings; development never loads the provider.
-    ipcMain.handle(
+    handleIpc(
       'app-update:status',
       () => applicationUpdater?.snapshot() || applicationUpdateFallback
     )
-    ipcMain.handle('updates:check', () => {
+    handleIpc('updates:check', () => {
       if (!app.isPackaged) return { success: true, developer: true, upToDate: true }
       if (!applicationUpdater)
         return { success: false, error: 'Updates require an installed release.' }
       void applicationUpdater.check()
       return { success: true }
     })
-    ipcMain.handle(
+    handleIpc(
       'updates:install',
       (_event, options) =>
         applicationUpdater?.install(options?.confirmed) || {
@@ -1302,7 +1322,7 @@ app.whenReady().then(
           error: 'No update is ready.'
         }
     )
-    ipcMain.handle(
+    handleIpc(
       'app-update:quit-and-install',
       (_event, options) =>
         applicationUpdater?.install(options?.confirmed) || {
@@ -1350,7 +1370,7 @@ app.whenReady().then(
         })
       return emulatorUpdate
     }
-    ipcMain.handle('emulators:update', () => {
+    handleIpc('emulators:update', () => {
       if (
         launchInProgress ||
         activeChild ||
@@ -1376,9 +1396,9 @@ app.whenReady().then(
       updateEmulators: startEmulatorUpdate,
       report: downloads.report
     })
-    ipcMain.handle('software:update', () => softwareUpdates.start())
-    ipcMain.handle('get-rpcs3-status', rpcs3Status)
-    ipcMain.handle('download-rpcs3', (_event, options) => {
+    handleIpc('software:update', () => softwareUpdates.start())
+    handleIpc('get-rpcs3-status', rpcs3Status)
+    handleIpc('download-rpcs3', (_event, options) => {
       if (emulatorUpdate) return { success: false, error: 'Emulators are updating.' }
       if (options?.confirmed !== true) return { success: false, canceled: true }
       return maintainRpcs3((context) => downloadRpcs3({ runtime: rpcs3, ...context }))
@@ -1387,7 +1407,7 @@ app.whenReady().then(
       ['install-ps3-firmware', 'firmware'],
       ['install-ps3-package', 'package']
     ]) {
-      ipcMain.handle(channel, (_event, token) =>
+      handleIpc(channel, (_event, token) =>
         maintainRpcs3(async (context) => {
           // Both installers accept only one-use selections issued by the in-app browser.
           const [file] = await fileBrowser.consume(kind, [token])
@@ -1401,12 +1421,12 @@ app.whenReady().then(
         })
       )
     }
-    ipcMain.handle('cancel-rpcs3-install', () => {
+    handleIpc('cancel-rpcs3-install', () => {
       rpcs3Job?.controller.abort()
       return { success: true }
     })
     // Fixed main-owned directory only; never open an arbitrary renderer path.
-    ipcMain.handle('open-rpcs3-folder', async () => {
+    handleIpc('open-rpcs3-folder', async () => {
       try {
         rpcs3.ensureDirectories()
         const error = await shell.openPath(rpcs3.directory)
@@ -1415,7 +1435,21 @@ app.whenReady().then(
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('get-system-status', () =>
+    handleIpc('hardware:get-status', () => hardwareDetector.detect())
+    app.on('gpu-info-update', () => {
+      void hardwareDetector.detect()
+    })
+    app.on('child-process-gone', (_event, details) => {
+      if (details.type === 'GPU' && details.reason !== 'clean-exit') {
+        void crashReporter.record({
+          emulator: 'Electron GPU',
+          code: details.exitCode,
+          reason: details.reason
+        })
+        void hardwareDetector.detect()
+      }
+    })
+    handleIpc('get-system-status', () =>
       [
         ...new Set(
           getLocalGames().map(
@@ -1455,25 +1489,25 @@ app.whenReady().then(
     /**
      * Bring Zenith above an active emulator and notify the renderer to show its session panel.
      */
-    ipcMain.handle('show-session-menu', () => {
+    handleIpc('show-session-menu', () => {
       openSessionMenu()
       return { success: !!activeChild }
     })
     /**
      * Hide the session panel and restore emulator focus if a child is still running.
      */
-    ipcMain.handle('resume-session', () => (activeChild ? resumeSession() : { success: false }))
+    handleIpc('resume-session', () => (activeChild ? resumeSession() : { success: false }))
     /**
      * Request termination of the active emulator; normal exit handling restores the dashboard.
      */
-    ipcMain.handle('stop-session', () => {
+    handleIpc('stop-session', () => {
       if (activeChild) activeChild.kill()
       return { success: true }
     })
     /**
      * Return resolved runtime paths and host information for diagnostics.
      */
-    ipcMain.handle('get-runtime-info', () => ({
+    handleIpc('get-runtime-info', () => ({
       platform: process.platform,
       retroarchDir,
       rpcs3Directory: rpcs3.directory,
@@ -1482,7 +1516,7 @@ app.whenReady().then(
     /**
      * Return enabled guide feature flags without making network requests.
      */
-    ipcMain.handle('get-guide-features', () => getGuideService().getFeatures())
+    handleIpc('get-guide-features', () => getGuideService().getFeatures())
     /**
      * Resolve a library game before returning optional cached/downloaded Wikipedia lore; failures
      * yield null.
@@ -1490,7 +1524,7 @@ app.whenReady().then(
      * @param {Object} _event - Electron invoke event; unused when no renderer notification is needed.
      * @param {string} gameId - Stable library/media identity; Main resolves or validates it before accessing files.
      */
-    ipcMain.handle('get-game-lore', async (_event, gameId) => {
+    handleIpc('get-game-lore', async (_event, gameId) => {
       try {
         const game = guideGame(gameId)
         return game ? await getGuideService().getLore(game) : null
@@ -1505,7 +1539,7 @@ app.whenReady().then(
      * @param {Object} _event - Electron invoke event; unused when no renderer notification is needed.
      * @param {string} gameId - Stable library/media identity; Main resolves or validates it before accessing files.
      */
-    ipcMain.handle('get-game-manual', async (_event, gameId) => {
+    handleIpc('get-game-manual', async (_event, gameId) => {
       try {
         const game = guideGame(gameId)
         const manual = game ? await getGuideService().getManual(game) : null
@@ -1524,7 +1558,7 @@ app.whenReady().then(
      * @param {string} options2.gameId - Stable library/media identity; Main resolves or validates it before accessing files.
      * @param {number} options2.index - Zero-based selection, button, or page index.
      */
-    ipcMain.handle('get-manual-page', async (_event, { gameId, index } = {}) => {
+    handleIpc('get-manual-page', async (_event, { gameId, index } = {}) => {
       try {
         const game = guideGame(gameId)
         return game ? mediaUrl(await getGuideService().getPage(game, index)) : null
@@ -1541,7 +1575,8 @@ app.whenReady().then(
      * @param {Object} options - Operation configuration; see destructured properties and defaults below.
      */
     const rescrapeJobs = new Map()
-    ipcMain.handle('games:rescrape', async (event, payload) => {
+    handleIpc('games:rescrape', async (event, payload) => {
+      const sender = event.sender
       try {
         // Renderer supplies identity/context, never authority to scrape an arbitrary path.
         const games = getLocalGames()
@@ -1558,8 +1593,8 @@ app.whenReady().then(
         if (!rescrapeJobs.has(game.gameId)) {
           const task = getScraper()
             .rescrape(games, game.gameId, (progress) => {
-              if (!event.sender.isDestroyed())
-                event.sender.send('scrape-progress', {
+              if (!sender.isDestroyed())
+                sender.send('scrape-progress', {
                   ...progress,
                   game: decorateGame(progress.game)
                 })
@@ -1574,7 +1609,8 @@ app.whenReady().then(
         return { success: false, error: error.message }
       }
     })
-    ipcMain.handle('scan-and-scrape-games', async (event, options) => {
+    handleIpc('scan-and-scrape-games', async (event, options) => {
+      const sender = event.sender
       const games = getLocalGames()
       if (options?.gameId != null && !games.some((game) => game.gameId === options.gameId))
         throw Error('Game is not in the library.')
@@ -1586,8 +1622,8 @@ app.whenReady().then(
          * @param {*} progress - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
         (progress) => {
-          if (!event.sender.isDestroyed())
-            event.sender.send('scrape-progress', {
+          if (!sender.isDestroyed())
+            sender.send('scrape-progress', {
               ...progress,
               game: decorateGame(progress.game)
             })
@@ -1603,14 +1639,14 @@ app.whenReady().then(
     let sessionRequest = null,
       sessionCompletion = null,
       restarting = false
-    ipcMain.handle('launch-game', (event, request) => {
+    handleIpc('launch-game', (event, request) => {
       if (restarting || activeChild || launchInProgress)
         return { success: false, error: 'A game is already running or launching.' }
       sessionRequest = request
       sessionCompletion = launchGame(event, request)
       return sessionCompletion
     })
-    ipcMain.handle('restart-session', async (event) => {
+    handleIpc('restart-session', async (event) => {
       if (restarting || !activeChild || !sessionRequest)
         return { success: false, error: 'No restartable session.' }
       restarting = true
@@ -1634,7 +1670,7 @@ app.whenReady().then(
      * @param {Object} _event - Electron invoke event; unused when no renderer notification is needed.
      * @param {string} platform - Platform selector; OS helpers accept win32/linux, BIOS and IPC helpers accept a library console ID.
      */
-    ipcMain.handle('delete-bios', async (_event, platform) => {
+    handleIpc('delete-bios', async (_event, platform) => {
       if (launchInProgress) return { success: false, error: 'Stop the running game first.' }
       try {
         await deleteBios(retroarchDir, platform)
@@ -1646,11 +1682,11 @@ app.whenReady().then(
     /**
      * Open the BIOS picker and copy a user-supplied dump without replacing an existing file.
      */
-    ipcMain.handle('upload-bios', uploadBios)
+    handleIpc('upload-bios', uploadBios)
     /**
      * Create and open the platform BIOS directory through the OS file manager.
      */
-    ipcMain.handle('open-bios-folder', openBiosFolder)
+    handleIpc('open-bios-folder', openBiosFolder)
 
     createWindow()
     if (app.isPackaged) {

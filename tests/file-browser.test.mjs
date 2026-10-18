@@ -30,7 +30,7 @@ test('browser lists local roots, directories first, and purpose-specific case-in
     art.entries.map((e) => e.name),
     ['Folder', 'Art.PNG', 'Loop.mp4']
   )
-  assert.equal(games.parent, path.dirname(root))
+  assert.equal(games.parent, null)
   assert.equal(games.breadcrumbs.at(-1).path, root)
   assert.equal(games.entries[1].size, 7)
   assert.equal(typeof games.entries[1].modified, 'number')

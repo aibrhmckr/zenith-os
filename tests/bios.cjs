@@ -50,7 +50,10 @@ cp.spawn = () => {
 }
 globalThis.fetch = async () => new Response('', { status: 404 })
 async function run(window) {
-  const ev = (s) => window.webContents.executeJavaScript(s)
+  const ev = (s) =>
+    window.webContents.executeJavaScript(s).catch((error) => {
+      throw new Error(`${error.message}\nRenderer expression: ${s}`, { cause: error })
+    })
   const wait = async (s) => {
     for (let i = 0; i < 250; i++) {
       if (await ev(s)) return
@@ -79,7 +82,7 @@ async function run(window) {
   await click('[data-launch-game]')
   await wait("!!document.querySelector('[data-console-modal=bios][open]')")
   assert.equal(
-    await ev("document.querySelector('#console-modal-title').textContent"),
+    await ev("document.querySelector('[data-console-modal=bios] h2').textContent"),
     'Required BIOS file missing'
   )
   const invalid = path.join(root, 'invalid.txt')

@@ -217,14 +217,12 @@ async function checkWindow(window) {
   assert.deepEqual(
     (
       await evaluate(
-        "Array.from(document.querySelectorAll('#console-filters button'), b => b.textContent)"
+        "Array.from(document.querySelectorAll('#console-filters button'), b => b.dataset.consoleFilter)"
       )
     ).sort(),
-    ['All consoles', ...new Set(Object.values(expectedSystems))].sort()
+    ['ALL', ...new Set(Object.values(expectedSystems))].sort()
   )
-  await evaluate(
-    "Array.from(document.querySelectorAll('#console-filters button')).find(b => b.textContent === 'NDS').click()"
-  )
+  await evaluate("document.querySelector('#console-filters [data-console-filter=NDS]').click()")
   await waitFor("document.querySelectorAll('[data-game-card]').length === 1")
   assert.equal(await selected(), 'Game-nds')
   await evaluate(
@@ -254,10 +252,10 @@ async function checkWindow(window) {
     'Held bumper switches only once even when result count changes'
   )
   await evaluate(
-    'window.testPad.buttons[5].pressed = false; window.testPad.buttons[3].pressed = true'
+    'window.testPad.buttons[5].pressed = false; window.testPad.buttons[2].pressed = true'
   )
   await waitFor("Boolean(document.querySelector('[data-console-modal=options][open]'))")
-  await evaluate('window.testPad.buttons[3].pressed = false')
+  await evaluate('window.testPad.buttons[2].pressed = false')
 
   fs.renameSync(gamesDirectory, path.join(fixtureRoot, 'saved-games'))
   fs.writeFileSync(gamesDirectory, 'not a directory')
