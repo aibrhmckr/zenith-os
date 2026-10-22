@@ -1,6 +1,6 @@
 {
   "name": "zenith",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zenith OS game library and console dashboard for Windows and Linux",
   "main": "./out/main/index.js",
   "author": "example.com",
