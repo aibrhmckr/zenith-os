@@ -393,3 +393,8 @@ release/
 !resources/*.ico
 !resources/*.icns
 !src/renderer/src/assets/**
+
+# AI & Graph Tools
+.codex/
+AGENTS.md
+graphify-out/
