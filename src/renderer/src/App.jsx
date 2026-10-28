@@ -1057,15 +1057,18 @@ export default function App() {
         <main data-spotlight-host className="dashboard-hero relative z-10 flex-1">
           {activeGame ? (
             <GameSpotlight key={activeGame.id} activeGame={activeGame} />
+          ) : !loading && !error && games.length === 0 ? (
+            <div data-library-empty role="status" className="max-w-xl py-6 drop-shadow-md">
+              <h1 className="text-2xl font-bold tracking-tight text-white md:text-3xl">
+                {t('emptyTitle')}
+              </h1>
+              <p className="mt-3 text-sm leading-relaxed text-white/75 md:text-base">
+                {t('empty')}
+              </p>
+            </div>
           ) : (
             <p className="py-6 text-white/60">
-              {loading
-                ? t('loading')
-                : error
-                  ? t('libraryError')
-                  : games.length
-                    ? t('noResults')
-                    : t('empty')}
+              {loading ? t('loading') : error ? t('libraryError') : t('noResults')}
             </p>
           )}
         </main>
