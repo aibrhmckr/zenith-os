@@ -10,7 +10,7 @@ import { coreArchive, coreBinary } from './fixtures/core-archive.cjs'
 const name = 'mupen64plus_next_libretro.dll'
 function fixture(t, fetchImpl = async () => new Response(coreArchive(name))) {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'zenith-core-verify-'))
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
   const retroarchDir = join(root, 'profile', 'emulators', 'retroarch')
   const options = {
     retroarchDir,

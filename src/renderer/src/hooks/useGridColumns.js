@@ -22,7 +22,10 @@ export default function useGridColumns(ref) {
      * Count computed grid tracks after layout, falling back to one column before CSS has established
      * a grid.
      */
+    let width = -1
     const measure = () => {
+      if (element.clientWidth === width) return
+      width = element.clientWidth
       const tracks = getComputedStyle(element).gridTemplateColumns.split(' ').filter(Boolean)
       setColumns(tracks[0] === 'none' ? 1 : tracks.length || 1)
     }

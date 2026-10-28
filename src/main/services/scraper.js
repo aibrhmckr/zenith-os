@@ -1,3 +1,5 @@
+import { createBatchedWriter, createWorkQueue, mapCooperatively } from './workScheduling.js'
+import { setImmediate as yieldTurn } from 'node:timers/promises'
 import {
   createPs3IsoExtractor,
   cachedPs3IsoMedia,
@@ -172,11 +174,15 @@ export function createScraper({
    * Serializes atomic games.json writes from independently finishing artwork and preview
    * downloads.
    */
-  let manifestQueue = Promise.resolve()
+  const manifestWriter = createBatchedWriter(async () => {
+    await fs.promises.mkdir(userData, { recursive: true })
+    await fs.promises.writeFile(manifest + '.tmp', JSON.stringify({ version: 1, games: records }))
+    await fs.promises.rename(manifest + '.tmp', manifest)
+  })
   /**
    * Processes one game's optional previews at a time without blocking the artwork scan.
    */
-  let mediaQueue = Promise.resolve()
+  const mediaQueue = createWorkQueue(2)
   /**
    * Deduplicates games already waiting in the optional media queue.
    */
@@ -212,6 +218,8 @@ export function createScraper({
   const guardedFetch =
     (kind) =>
     async (url, options = {}) => {
+      await mediaQueue.ready()
+      options.signal?.throwIfAborted()
       if (!allowed(kind)) throw Error('Media download disabled')
       let controller = controllers.get(kind)
       if (!controller || controller.signal.aborted)
@@ -256,29 +264,8 @@ export function createScraper({
    * @param {Function} change - Manifest mutation run inside the serialized write queue.
    */
   function saveRecords(change) {
-    const write = manifestQueue
-      .catch(
-        /**
-         * Handle the rejected stage of write here so its failure follows this operation's fallback/error policy.
-         */
-        () => {}
-      )
-      .then(
-        /**
-         * Continue write after the preceding asynchronous stage resolves; the returned value or Promise feeds the same chain.
-         */
-        async () => {
-          change()
-          await fs.promises.mkdir(userData, { recursive: true })
-          await fs.promises.writeFile(
-            `${manifest}.tmp`,
-            JSON.stringify({ version: 1, games: records }, null, 2)
-          )
-          await fs.promises.rename(`${manifest}.tmp`, manifest)
-        }
-      )
-    manifestQueue = write
-    return write
+    change()
+    return manifestWriter.request()
   }
 
   /**
@@ -315,7 +302,7 @@ export function createScraper({
   function queueMedia(games, force, priority = false) {
     if (force) for (const provider of Object.values(downloaders)) provider.clearCatalogs()
     for (const original of games) {
-      const game = enrich(original)
+      const game = original.media ? original : enrich(original)
       removed.delete(game.gameId)
       if (pendingMedia.has(game.gameId)) continue
       if (!force && ['boxart', 'snap', 'music', 'video'].every((kind) => game.media[kind])) continue
@@ -351,8 +338,8 @@ export function createScraper({
       const token = {}
       mediaTokens.set(game.gameId, token)
       // A manual request bypasses other games' optional previews; its own active job is awaited.
-      const scheduled = (priority ? Promise.resolve() : mediaQueue)
-        .then(
+      const scheduled = mediaQueue
+        .schedule(
           /**
            * Continue queueMedia after the preceding asynchronous stage resolves; the returned value or Promise feeds the same chain.
            */
@@ -365,7 +352,7 @@ export function createScraper({
               return
             const task = Promise.all(
               kinds.filter(allowed).map((kind) =>
-                downloaders[kind](enrich(game), {
+                downloaders[kind](game, {
                   kinds: [kind],
                   force,
                   /**
@@ -415,7 +402,8 @@ export function createScraper({
             } finally {
               runningMedia.delete(game.gameId)
             }
-          }
+          },
+          priority
         )
         .catch(
           /**
@@ -438,7 +426,6 @@ export function createScraper({
           }
         )
       mediaTasks.set(game.gameId, scheduled)
-      if (!priority) mediaQueue = scheduled
     }
   }
 
@@ -583,10 +570,11 @@ export function createScraper({
    */
   async function catalog(system, kind) {
     const base = `${CDN}${encodeURIComponent(system)}/${KINDS[kind]}/`
+    if (catalogs.get(base)?.expires <= Date.now()) catalogs.delete(base)
     if (!catalogs.has(base)) {
-      catalogs.set(
-        base,
-        (
+      catalogs.set(base, {
+        expires: Date.now() + DAY,
+        promise: (
           /**
            * Complete the enclosing callback step owned by catalog; caller arguments and captured state determine this stage's result.
            */
@@ -605,12 +593,21 @@ export function createScraper({
                 /* Ignore malformed links in an external listing. */
               }
             }
-            return entries
+            const index = new Map()
+            for (const entry of entries) {
+              const key = normalized(entry.title)
+              if (!index.has(key)) index.set(key, [])
+              index.get(key).push(entry)
+            }
+            return index
           }
-        )()
-      )
+        )().catch((error) => {
+          catalogs.delete(base)
+          throw error
+        })
+      })
     }
-    return catalogs.get(base)
+    return catalogs.get(base).promise
   }
 
   /**
@@ -657,11 +654,23 @@ export function createScraper({
             (game) => [gameMediaId(game), game]
           )
         )
-        for (const original of games.filter(
+        const prepared = await mapCooperatively(games, enrich)
+        for (const original of prepared.filter(
           (entry) => !targetId || gameMediaId(entry) === targetId
         )) {
-          const game = enrich(original),
+          const game = original,
             prefs = mediaPreferences(getPreferences())
+          // Cached/disabled entries need no per-game terminal traffic during routine rescans.
+          if (
+            !force &&
+            !(
+              (prefs.downloadCovers && !game.media.boxart) ||
+              (prefs.downloadBackgrounds && !game.media.snap) ||
+              (prefs.downloadVideos && !game.media.video) ||
+              (prefs.downloadAudio && !game.media.music)
+            )
+          )
+            continue
           log('İstek alındı: ' + game.title + ' (' + game.systemShort + ')')
           log(
             'Ayarlar: Kapak: ' +
@@ -674,7 +683,7 @@ export function createScraper({
               prefs.downloadAudio
           )
         }
-        catalogs.clear()
+        if (force) catalogs.clear()
         let offline = false
         let warning = null
         let completed = 0
@@ -687,13 +696,21 @@ export function createScraper({
          */
         const worker = async () => {
           while (cursor < games.length) {
+            await mediaQueue.ready()
+            await yieldTurn()
+            if (cursor >= games.length) break
             const index = cursor++
-            let game = enrich(games[index])
+            let game = prepared[index]
             if (removed.has(game.gameId)) continue
             const complete = ['boxart', 'snap', 'music', 'video'].every((kind) => game.media[kind])
-            if ((force || !complete) && (!targetId || targetId === game.gameId))
+            if (
+              game.systemShort === 'PS3' &&
+              (force || !complete) &&
+              (!targetId || targetId === game.gameId)
+            ) {
               await extractIso(game, { force }).catch(() => {})
-            game = enrich(game)
+              game = enrich(game)
+            }
             if (!targetId || game.gameId === targetId) queueMedia([game], force, Boolean(targetId))
             const previous = records[game.gameId]
             let checkedAt = previous?.checkedAt || 0
@@ -730,14 +747,7 @@ export function createScraper({
                       continue
                     try {
                       const entries = await catalog(system, kind)
-                      const candidates = entries.filter(
-                        /**
-                         * Retain only entries entries satisfying candidates's local predicate; excluded values do not reach the next stage.
-                         *
-                         * @param {*} entry - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-                         */
-                        (entry) => normalized(entry.title) === normalized(game.title)
-                      )
+                      const candidates = [...(entries.get(normalized(game.title)) || [])]
                       candidates.sort(
                         /**
                          * Order candidates candidates deterministically before worker consumes the preferred result.
@@ -823,7 +833,7 @@ export function createScraper({
                   warning = `Medya indirilemedi; yerel önbellek kullanılıyor. ${error.message}`
               }
             }
-            game = enrich(game)
+            if (allowed('boxart') || allowed('snap')) game = enrich(game)
             if (removed.has(game.gameId)) continue
             nextRecords[game.gameId] = recordFor(game, { ...previous, checkedAt, artworkCheckedAt })
             output[index] = game
@@ -831,6 +841,12 @@ export function createScraper({
           }
         }
         await Promise.all([worker(), worker()])
+        const latestMedia = new Map(
+          (await mapCooperatively(output.filter(Boolean), enrich)).map((game) => [
+            game.gameId,
+            game.media
+          ])
+        )
         await saveRecords(
           /**
            * Mutate scan's manifest only inside the serialized write queue to avoid lost concurrent updates.
@@ -841,7 +857,7 @@ export function createScraper({
               nextRecords[game.gameId].archiveCheckedAt =
                 records[game.gameId]?.archiveCheckedAt || {}
               nextRecords[game.gameId].coverTitleId = records[game.gameId]?.coverTitleId || null
-              nextRecords[game.gameId].media = enrich(game).media
+              nextRecords[game.gameId].media = latestMedia.get(game.gameId)
             }
             records = Object.fromEntries(
               Object.entries(nextRecords).filter(
@@ -865,7 +881,7 @@ export function createScraper({
                */
               (game) => game && !removed.has(game.gameId)
             )
-            .map(enrich),
+            .map((game) => ({ ...game, media: records[game.gameId]?.media || game.media })),
           warning
         }
       }
@@ -915,6 +931,8 @@ export function createScraper({
     rescrape,
     forget,
     cancelDisabledRequests,
-    whenMediaIdle: () => Promise.all([mediaQueue, ...mediaTasks.values()])
+    setPaused: (paused) => mediaQueue.setPaused(paused),
+    flush: () => manifestWriter.flush(),
+    whenMediaIdle: () => Promise.all([mediaQueue.whenIdle(), ...mediaTasks.values()])
   }
 }

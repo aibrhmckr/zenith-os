@@ -57,16 +57,20 @@ export default function SystemSettings({
    */
   const load = () => window.electronAPI.getSystemStatus().then(setSystems)
   /**
-   * Read physical system status on mount, every two seconds, and on window focus; stop polling and
+   * Check physical files only while the status subpage is open; Main reuses the library snapshot.
    * ignore late responses on unmount.
    */
   useEffect(() => {
+    if (!systemPage) return
     let active = true
+    let pending = false
     /**
      * Poll Main while mounted and on focus; convert IPC failures into a visible status error and
      * discard stale unmounted responses.
      */
     const refresh = async () => {
+      if (pending) return
+      pending = true
       try {
         const status = await window.electronAPI.getSystemStatus()
         if (active) setSystems(status)
@@ -76,20 +80,22 @@ export default function SystemSettings({
           setFailed(true)
           setMessage('System status unavailable.')
         }
+      } finally {
+        pending = false
       }
     }
     void refresh()
-    const timer = setInterval(refresh, 2000)
+    const interval = setInterval(refresh, 2000)
     window.addEventListener('focus', refresh)
     /**
      * Release the listeners, timers, or focus ownership acquired by SystemSettings's effect before it reruns or unmounts.
      */
     return () => {
       active = false
-      clearInterval(timer)
+      clearInterval(interval)
       window.removeEventListener('focus', refresh)
     }
-  }, [])
+  }, [systemPage])
   /**
    * Lock settings actions during an IPC operation, show its result, and recheck disk status even
    * after failure or cancellation.

@@ -58,10 +58,19 @@ function FileIcon({ type = 'game' }) {
     </svg>
   )
 }
+const formatters = new Map()
+function formats(language) {
+  if (!formatters.has(language))
+    formatters.set(language, {
+      size: new Intl.NumberFormat(language, { maximumFractionDigits: 1 }),
+      date: new Intl.DateTimeFormat(language, { dateStyle: 'medium' })
+    })
+  return formatters.get(language)
+}
 function sizeLabel(size, language) {
   if (!Number.isFinite(size)) return '—'
   const unit = Math.min(4, Math.floor(Math.log(Math.max(1, size)) / Math.log(1024)))
-  return `${new Intl.NumberFormat(language, { maximumFractionDigits: 1 }).format(size / 1024 ** unit)} ${['B', 'KB', 'MB', 'GB', 'TB'][unit]}`
+  return `${formats(language).size.format(size / 1024 ** unit)} ${['B', 'KB', 'MB', 'GB', 'TB'][unit]}`
 }
 /** Folder metadata is requested after a short focus delay and never blocks directory navigation. */
 function FolderPreview({ entry }) {
@@ -142,15 +151,18 @@ function LivePreview({ entry }) {
   useEffect(() => {
     let live = true
     const media = ['image', 'video'].includes(entry?.type)
-    window.electronAPI
-      .previewFile(media ? entry.token : null)
-      .then((value) => {
-        if (live) setResult(value)
-      })
-      .catch(() => {
-        if (live) setFailed(true)
-      })
+    const timer = setTimeout(() => {
+      window.electronAPI
+        .previewFile(media ? entry.token : null)
+        .then((value) => {
+          if (live) setResult(value)
+        })
+        .catch(() => {
+          if (live) setFailed(true)
+        })
+    }, 160)
     return () => {
+      clearTimeout(timer)
       live = false
       void window.electronAPI.previewFile(null).catch(() => {})
     }
@@ -340,9 +352,7 @@ export default function FileBrowser({ kind, onFinish }) {
   const label = (entry) =>
     entry.shortcut && entry.shortcut !== 'drive' ? t('fileLocation_' + entry.shortcut) : entry.name
   const date = (value) =>
-    Number.isFinite(value)
-      ? new Intl.DateTimeFormat(language, { dateStyle: 'medium' }).format(value)
-      : t('fileMetadataUnavailable')
+    Number.isFinite(value) ? formats(language).date.format(value) : t('fileMetadataUnavailable')
   const title = (
     <span className="file-browser-heading">
       <span>{t('fileBrowser')}</span>

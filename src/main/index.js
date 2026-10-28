@@ -1,3 +1,8 @@
+import {
+  createSnapshot,
+  mapCooperatively,
+  createProgressPublisher
+} from './services/workScheduling.js'
 import { createHardwareDetector } from './services/hardwareDetector'
 import { createCrashReporter, watchEmulator } from './services/crashResilience'
 import { secureIpcHandle, hardenWebContents } from './services/securityBoundary'
@@ -150,6 +155,7 @@ async function installRpcs3AndRefresh(options) {
   if (result.success && options.kind === 'package') {
     const installed = scanRpcs3Games(rpcs3).find((game) => game.titleId === result.titleId)
     if (installed) getLibrary().add([installed.path])
+    librarySnapshot.invalidate()
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library-changed')
   }
   return result
@@ -293,9 +299,9 @@ function getGuideService() {
  *
  * @param {string} gameId - Stable library/media identity; Main resolves or validates it before accessing files.
  */
-function guideGame(gameId) {
+async function guideGame(gameId) {
   return typeof gameId === 'string'
-    ? getLocalGames().find(
+    ? (await getLocalGames()).find(
         /**
          * Select the first matching getLocalGames() entry for guideGame; absence is handled by the caller's fallback.
          *
@@ -335,7 +341,8 @@ function getScraper() {
  * @param {Object} game - Library game record, including identity, platform, and available local media.
  */
 function decorateGame(game) {
-  const enriched = getScraper().enrich(game)
+  const enriched =
+    game.mediaDirectory && game.gameId && game.media ? game : getScraper().enrich(game)
   const cover = enriched.media.boxart || game.cover
   const backdrop = enriched.media.snap || enriched.media.titleScreen || game.backdrop || cover
   return {
@@ -364,9 +371,13 @@ protocol.registerSchemesAsPrivileged([
  * Scan regular files directly in the central games directory, apply PSP ISO hints, merge
  * imported entries, and omit pending deletions.
  */
-function getLocalGames() {
-  fs.mkdirSync(gamesDirectory, { recursive: true })
-  const files = fs.readdirSync(gamesDirectory, { withFileTypes: true }).filter(
+const librarySnapshot = createSnapshot(scanLocalGames)
+function getLocalGames(options) {
+  return librarySnapshot.get(options)
+}
+async function scanLocalGames() {
+  await fs.promises.mkdir(gamesDirectory, { recursive: true })
+  const files = (await fs.promises.readdir(gamesDirectory, { withFileTypes: true })).filter(
     /**
      * Retain only fs .readdirSync(gamesDirectory, { withFileTypes: true }) entries satisfying files's local predicate; excluded values do not reach the next stage.
      *
@@ -385,56 +396,56 @@ function getLocalGames() {
     )
   )
 
-  const local = files
-    .filter(
-      /**
-       * Retain only files entries satisfying local's local predicate; excluded values do not reach the next stage.
-       *
-       * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-       */
-      (file) =>
-        supportedExtensions.has(extname(file.name).toLowerCase()) &&
-        !getLibrary().excluded(join(gamesDirectory, file.name))
-    )
-    .sort(
-      /**
-       * Order files .filter( (file) => supportedExtensions.has(extname(file.name).toLowerCase()) && !getLibrar candidates deterministically before local consumes the preferred result.
-       *
-       * @param {*} a - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-       * @param {*} b - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-       */
-      (a, b) => a.name.localeCompare(b.name)
-    )
-    .map(
-      /**
-       * Project each files .filter( (file) => supportedExtensions.has(extname(file.name).toLowerCase()) && !getLibrar entry for local; preserve input ordering in the derived collection.
-       *
-       * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-       */
-      (file) => {
-        const { name } = parse(file.name)
-        const gamePath = join(gamesDirectory, file.name)
-        const system = getLibrary().platformFor(gamePath)
-        const coverName =
-          fileNames.get(pathKey(`${name}.jpg`)) || fileNames.get(pathKey(`${name}.png`))
-        const cover = coverName ? join(gamesDirectory, coverName) : null
-        const coverUrl = coverName ? `game-cover://local/${encodeURIComponent(coverName)}` : null
-        if (coverUrl) localCovers.set(coverUrl, cover)
+  const local = await mapCooperatively(
+    files
+      .filter(
+        /**
+         * Retain only files entries satisfying local's local predicate; excluded values do not reach the next stage.
+         *
+         * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (file) =>
+          supportedExtensions.has(extname(file.name).toLowerCase()) &&
+          !getLibrary().excluded(join(gamesDirectory, file.name))
+      )
+      .sort(
+        /**
+         * Order files .filter( (file) => supportedExtensions.has(extname(file.name).toLowerCase()) && !getLibrar candidates deterministically before local consumes the preferred result.
+         *
+         * @param {*} a - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         * @param {*} b - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+         */
+        (a, b) => a.name.localeCompare(b.name)
+      ),
+    /**
+     * Project each files .filter( (file) => supportedExtensions.has(extname(file.name).toLowerCase()) && !getLibrar entry for local; preserve input ordering in the derived collection.
+     *
+     * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+     */
+    (file) => {
+      const { name } = parse(file.name)
+      const gamePath = join(gamesDirectory, file.name)
+      const system = getLibrary().platformFor(gamePath)
+      const coverName =
+        fileNames.get(pathKey(`${name}.jpg`)) || fileNames.get(pathKey(`${name}.png`))
+      const cover = coverName ? join(gamesDirectory, coverName) : null
+      const coverUrl = coverName ? `game-cover://local/${encodeURIComponent(coverName)}` : null
+      if (coverUrl) localCovers.set(coverUrl, cover)
 
-        return decorateGame({
-          id: file.name,
-          title: name,
-          fileName: file.name,
-          path: gamePath,
-          system,
-          systemShort: system,
-          platformOverride: getLibrary().platformOverride(gamePath),
-          cover,
-          backdrop: cover,
-          coverUrl
-        })
-      }
-    )
+      return decorateGame({
+        id: file.name,
+        title: name,
+        fileName: file.name,
+        path: gamePath,
+        system,
+        systemShort: system,
+        platformOverride: getLibrary().platformOverride(gamePath),
+        cover,
+        backdrop: cover,
+        coverUrl
+      })
+    }
+  )
   for (const game of scanRpcs3Games(rpcs3)) {
     if (!getLibrary().excluded(game.path))
       local.push(decorateGame({ ...game, coverUrl: mediaUrl(game.cover) }))
@@ -452,7 +463,7 @@ function getLocalGames() {
   return [
     ...local,
     ...getLibrary()
-      .list()
+      .list((file) => paths.has(pathKey(file)) || isRpcs3ManagedPath(rpcs3, file))
       .filter(
         /**
          * Retain only getLibrary() .list() entries satisfying getLocalGames's local predicate; excluded values do not reach the next stage.
@@ -606,10 +617,13 @@ async function launchGame(event, request) {
   launchInProgress = true
   try {
     // Resolve the authoritative disk/override platform, never route using stale renderer labels.
-    const registered = getLocalGames().find((entry) => entry.path === request?.gamePath)
+    const launchGames = await getLocalGames({ fresh: true })
+    const registered = launchGames.find((entry) => entry.path === request?.gamePath)
+    if (registered && !isFile(registered.path))
+      return { success: false, error: 'Game file is missing.' }
     if (registered) request = { ...request, consoleType: registered.systemShort }
     if (request?.consoleType === 'PS3') {
-      const game = getLocalGames().find(
+      const game = launchGames.find(
         (entry) => entry.path === request.gamePath && entry.systemShort === 'PS3'
       )
       if (!game) return { success: false, error: 'ps3_game_missing', platform: 'PS3' }
@@ -635,7 +649,7 @@ async function launchGame(event, request) {
     }
     // Only launch ROMs recognized by the local library, using the detected system.
     if (
-      !getLocalGames().some(
+      !launchGames.some(
         /**
          * Short-circuit when any getLocalGames() entry meets launchGame's condition.
          *
@@ -655,7 +669,7 @@ async function launchGame(event, request) {
         )
       }
     }
-    const game = getLocalGames().find(
+    const game = launchGames.find(
       /**
        * Select the first matching getLocalGames() entry for game; absence is handled by the caller's fallback.
        *
@@ -809,6 +823,7 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
         child = new EventEmitter()
       }
       activeChild = child
+      scraper?.setPaused(true)
       child.stdout?.on(
         'data',
         /**
@@ -842,6 +857,7 @@ function runEmulatorSession(event, { executable, args, cwd, label, env }) {
         finished = true
         clearTimeout(startupTimer)
         activeChild = null
+        scraper?.setPaused(false)
         try {
           sessionBridge?.stop()
         } catch (error) {
@@ -1161,15 +1177,18 @@ app.whenReady().then(
     /**
      * Return current library records with local protocol URLs without waiting for network scraping.
      */
-    handleIpc('get-local-games', () => getLocalGames())
-    handleIpc('set-game-platform', (_event, { gameId, platform } = {}) => {
+    handleIpc('get-local-games', () => getLocalGames({ fresh: true }))
+    handleIpc('set-game-platform', async (_event, { gameId, platform } = {}) => {
       try {
         if (launchInProgress || rpcs3Job || emulatorUpdate)
           throw Error('Stop the running game or setup first.')
-        const game = guideGame(gameId)
+        const game = await guideGame(gameId)
         if (!game || game.rpcs3Installed) throw Error('Game platform cannot be changed.')
         getLibrary().setPlatform(game.path, platform)
-        const updated = getLocalGames().find((entry) => entry.path === game.path)
+        librarySnapshot.invalidate()
+        const updated = (await getLocalGames({ fresh: true })).find(
+          (entry) => entry.path === game.path
+        )
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library-changed')
         return { success: true, game: updated }
       } catch (error) {
@@ -1198,6 +1217,7 @@ app.whenReady().then(
           selection.filePaths.filter((file) => extname(file).toLowerCase() !== '.pkg')
         )
         getLibrary().add(copied)
+        librarySnapshot.invalidate()
         return { success: true, count: copied.length + packages.length }
       } catch (error) {
         return { success: false, error: error.message }
@@ -1212,7 +1232,7 @@ app.whenReady().then(
      */
     handleIpc('delete-game', async (_event, gameId) => {
       if (launchInProgress) return { success: false, error: 'Stop the running game first.' }
-      const game = guideGame(gameId)
+      const game = await guideGame(gameId)
       if (!game || deleting.has(gameId)) return { success: false, error: 'Game unavailable.' }
       deleting.add(gameId)
       try {
@@ -1233,6 +1253,7 @@ app.whenReady().then(
         }
         await coreCatalog.forget(gameId)
         getLibrary().remove(game.path)
+        librarySnapshot.invalidate()
         revokeMediaDirectory(directory)
         return { success: true }
       } catch (error) {
@@ -1261,7 +1282,7 @@ app.whenReady().then(
         if (preparationError) throw preparationError
         if (launchInProgress || emulatorUpdate)
           throw Error('Stop the game or wait for emulator updates.')
-        const game = gameId ? guideGame(gameId) : null
+        const game = gameId ? await guideGame(gameId) : null
         if ((game?.systemShort || platform) === 'PS3')
           throw Error('PS3 uses standalone RPCS3, not a Libretro core.')
         if (
@@ -1437,7 +1458,7 @@ app.whenReady().then(
     })
     handleIpc('hardware:get-status', () => hardwareDetector.detect())
     app.on('gpu-info-update', () => {
-      void hardwareDetector.detect()
+      void hardwareDetector.detect({ force: true })
     })
     app.on('child-process-gone', (_event, details) => {
       if (details.type === 'GPU' && details.reason !== 'clean-exit') {
@@ -1446,13 +1467,13 @@ app.whenReady().then(
           code: details.exitCode,
           reason: details.reason
         })
-        void hardwareDetector.detect()
+        void hardwareDetector.detect({ force: true })
       }
     })
-    handleIpc('get-system-status', () =>
+    handleIpc('get-system-status', async () =>
       [
         ...new Set(
-          getLocalGames().map(
+          (await getLocalGames()).map(
             /**
              * Project each getLocalGames() entry for index.js; preserve input ordering in the derived collection.
              *
@@ -1526,7 +1547,7 @@ app.whenReady().then(
      */
     handleIpc('get-game-lore', async (_event, gameId) => {
       try {
-        const game = guideGame(gameId)
+        const game = await guideGame(gameId)
         return game ? await getGuideService().getLore(game) : null
       } catch {
         return null
@@ -1541,7 +1562,7 @@ app.whenReady().then(
      */
     handleIpc('get-game-manual', async (_event, gameId) => {
       try {
-        const game = guideGame(gameId)
+        const game = await guideGame(gameId)
         const manual = game ? await getGuideService().getManual(game) : null
         return manual
           ? { title: manual.title, pageCount: manual.leaves.length, sourceUrl: manual.sourceUrl }
@@ -1560,7 +1581,7 @@ app.whenReady().then(
      */
     handleIpc('get-manual-page', async (_event, { gameId, index } = {}) => {
       try {
-        const game = guideGame(gameId)
+        const game = await guideGame(gameId)
         return game ? mediaUrl(await getGuideService().getPage(game, index)) : null
       } catch {
         return null
@@ -1579,7 +1600,7 @@ app.whenReady().then(
       const sender = event.sender
       try {
         // Renderer supplies identity/context, never authority to scrape an arbitrary path.
-        const games = getLocalGames()
+        const games = await getLocalGames()
         const game = games.find(
           (entry) => entry.id === payload?.id && entry.gameId === payload?.gameId
         )
@@ -1610,27 +1631,22 @@ app.whenReady().then(
       }
     })
     handleIpc('scan-and-scrape-games', async (event, options) => {
-      const sender = event.sender
-      const games = getLocalGames()
+      // The dashboard just obtained a fresh local snapshot; standalone scan callers still rescan disk.
+      const games = await getLocalGames({ fresh: options?.reuseSnapshot !== true })
       if (options?.gameId != null && !games.some((game) => game.gameId === options.gameId))
         throw Error('Game is not in the library.')
-      const result = await getScraper().scan(
-        games,
-        /**
-         * Complete the scan callback step owned by result; caller arguments and captured state determine this stage's result.
-         *
-         * @param {*} progress - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-         */
-        (progress) => {
-          if (!sender.isDestroyed())
-            sender.send('scrape-progress', {
-              ...progress,
-              game: decorateGame(progress.game)
-            })
-        },
-        { force: options?.force === true, gameId: options?.gameId || null }
-      )
-      return { ...result, games: result.games.map(decorateGame) }
+      const progress = createProgressPublisher((value) => {
+        if (!event.sender.isDestroyed()) event.sender.send('scrape-progress', value)
+      }, decorateGame)
+      try {
+        const result = await getScraper().scan(games, progress.report, {
+          force: options?.force === true,
+          gameId: options?.gameId || null
+        })
+        return { ...result, games: await mapCooperatively(result.games, decorateGame) }
+      } finally {
+        progress.flush()
+      }
     })
     /**
      * Verify ROM/core/BIOS, prepare session config, spawn RetroArch, and keep the Promise pending
@@ -1761,18 +1777,23 @@ app.on(
   () => {
     sessionBridge?.stop()
     clearTimeout(updateTimer)
-    downloads.flush()
     globalShortcut.unregisterAll()
   }
 )
 
-// Wait for cancellation/rollback before closing the host of an active installer.
+// Let installers finish/roll back before flushing their final task history.
+let persistenceFlushed = false
+let quitPending = null
 app.on('before-quit', (event) => {
-  if (!rpcs3Job && !emulatorUpdate && !cores.busy()) return
+  if (persistenceFlushed) return
   event.preventDefault()
-  const pending = rpcs3Job
-  pending?.controller.abort()
-  void Promise.allSettled([pending?.promise, emulatorUpdate, cores.whenIdle()]).then(() =>
+  if (quitPending) return
+  quitPending = (async () => {
+    const pending = rpcs3Job
+    pending?.controller.abort()
+    await Promise.allSettled([pending?.promise, emulatorUpdate, cores.whenIdle()])
+    await Promise.allSettled([downloads.flush(), scraper?.flush()])
+    persistenceFlushed = true
     app.quit()
-  )
+  })()
 })

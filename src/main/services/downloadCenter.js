@@ -1,3 +1,4 @@
+import { createBatchedWriter } from './workScheduling.js'
 import fs from 'node:fs'
 import { join } from 'node:path'
 
@@ -19,18 +20,27 @@ export function createDownloadCenter({ userData, publish = () => {}, now = Date.
     /* A missing or damaged history never blocks the launcher. */
   }
   const snapshot = () => [...tasks.values()].sort((a, b) => b.updatedAt - a.updatedAt)
-  const flush = () => {
+  const writer = createBatchedWriter(async () => {
+    const value = snapshot()
+    await fs.promises.mkdir(userData, { recursive: true })
+    await fs.promises.writeFile(file + '.tmp', JSON.stringify(value))
+    await fs.promises.rename(file + '.tmp', file)
+  }, 1000)
+  const persist = () =>
+    writer.request().catch((error) => console.warn('[Downloads] History:', error.message))
+  const publishNow = () => {
     clearTimeout(timer)
     timer = null
     const value = snapshot()
-    try {
-      fs.mkdirSync(userData, { recursive: true })
-      fs.writeFileSync(file + '.tmp', JSON.stringify(value))
-      fs.renameSync(file + '.tmp', file)
-    } catch (error) {
-      console.warn('[Downloads] History:', error.message)
-    }
-    publish(value)
+    const history = value.filter((item) => !['active', 'queued'].includes(item.status))
+    for (const item of history.slice(80)) tasks.delete(item.id)
+    publish(snapshot())
+  }
+  const flush = async () => {
+    publishNow()
+    const pending = persist()
+    await writer.flush()
+    await pending
   }
   const report = (patch) => {
     if (typeof patch.id !== 'string') return
@@ -45,11 +55,14 @@ export function createDownloadCenter({ userData, publish = () => {}, now = Date.
           : null
     else if (!Number.isFinite(task.percent)) task.percent = null
     tasks.set(task.id, task)
-    const history = snapshot().filter((item) => item.status !== 'active')
-    for (const item of history.slice(80)) tasks.delete(item.id)
-    if (task.status !== 'active') flush()
-    else if (!timer) {
-      timer = setTimeout(flush, 150)
+    if (task.status !== 'active') {
+      publishNow()
+      void persist()
+    } else if (!timer) {
+      timer = setTimeout(() => {
+        publishNow()
+        void persist()
+      }, 150)
       timer.unref?.()
     }
   }
@@ -58,7 +71,8 @@ export function createDownloadCenter({ userData, publish = () => {}, now = Date.
     for (const [id, task] of tasks) {
       if (!['active', 'queued'].includes(task.status)) tasks.delete(id)
     }
-    flush()
+    publishNow()
+    void persist()
     return snapshot()
   }
   return { report, snapshot, flush, clearHistory }

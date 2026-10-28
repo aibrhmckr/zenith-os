@@ -2188,3 +2188,33 @@ html[data-cursor-hidden='true'] *::backdrop {
     animation: none;
   }
 }
+
+.wallpaper-preview-window {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+.wallpaper-preview-window > img,
+.wallpaper-preview-window > video,
+.wallpaper-preview-window > .wallpaper-theme {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Procedural previews use the card's canvas, not the monitor's dimensions. */
+.wallpaper-preview-window {
+  container-type: size;
+}
+.wallpaper-preview-window .theme-retro-grid i:nth-child(2) {
+  background-size: 24px 24px;
+}
+.wallpaper-preview-window .theme-pixel-nebula i:nth-child(2) {
+  width: 3px;
+  height: 3px;
+  box-shadow:
+    12cqw 20cqh #996bdf,
+    36cqw -10cqh #769de3,
+    55cqw 24cqh #9bfde7,
+    8cqw -15cqh #b197ed;
+}

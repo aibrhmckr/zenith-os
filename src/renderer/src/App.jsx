@@ -1,3 +1,4 @@
+import { libraryWindow } from './hooks/libraryWindow'
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { createGamepadHotkey, keyboardCode } from '../../shared/hotkeys'
 import { CONSOLE_EXTENSIONS } from '../../shared/consoles'
@@ -82,6 +83,7 @@ export default function App() {
    */
   const gridRef = useRef(null)
   const columns = useGridColumns(gridRef)
+  const [scrollRow, setScrollRow] = useState(0)
   const clock = useClock()
   const downloads = useDownloads()
   const activeDownloads = downloads.filter((task) => task.status === 'active').length
@@ -174,21 +176,25 @@ export default function App() {
     for (const game of games) counts[game.systemShort] = (counts[game.systemShort] || 0) + 1
     return counts
   }, [games])
-  const filteredGames = games.filter(
-    /**
-     * Retain only games entries satisfying filteredGames's local predicate; excluded values do not reach the next stage.
-     *
-     * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-     */
-    (game) =>
-      (selectedConsole === 'ALL' || game.systemShort === selectedConsole) &&
-      game.title.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  const filteredGames = useMemo(() => {
+    const query = searchQuery.toLowerCase()
+    return games.filter(
+      /**
+       * Retain only games entries satisfying filteredGames's local predicate; excluded values do not reach the next stage.
+       *
+       * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
+       */
+      (game) =>
+        (selectedConsole === 'ALL' || game.systemShort === selectedConsole) &&
+        game.title.toLowerCase().includes(query)
+    )
+  }, [games, selectedConsole, searchQuery])
   /**
    * Safe selected index after filtering; an empty library still uses zero without dereferencing a
    * missing game.
    */
   const focusedIndex = Math.min(currentIndex, Math.max(0, filteredGames.length - 1))
+  const visibleIndices = libraryWindow(filteredGames.length, columns, focusedIndex, scrollRow)
   const activeGame = filteredGames[focusedIndex] || null
   const gameBackground = wallpaperGameMedia(activeGame, wallpapers.onlyCustom, failedBackground)
   const {
@@ -1240,103 +1246,127 @@ export default function App() {
               {warning}
             </p>
           )}
-          <div ref={gridRef} className="poster-grid">
-            {filteredGames.map(
+          <div
+            ref={gridRef}
+            className="poster-grid"
+            data-library-size={filteredGames.length}
+            style={
+              filteredGames.length > 96
+                ? {
+                    gridTemplateRows:
+                      'repeat(' + Math.ceil(filteredGames.length / columns) + ', 216px)'
+                  }
+                : undefined
+            }
+            onScroll={(event) => setScrollRow(Math.floor(event.currentTarget.scrollTop / 232))}
+          >
+            {visibleIndices.map(
               /**
                * Project each filteredGames entry for App; preserve input ordering in the derived collection.
                *
                * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
                * @param {*} index - Zero-based collection index.
                */
-              (game, index) => (
-                <button
-                  key={game.id}
-                  data-game-card
-                  data-game-id={game.id}
-                  aria-label={game.title}
-                  aria-pressed={index === focusedIndex}
-                  tabIndex={index === focusedIndex ? 0 : -1}
-                  ref={index === focusedIndex ? selectedCardRef : null}
-                  onFocus={
-                    /**
-                     * Handle onFocus on this App control using the current render's values; delegate state/IPC work to its owning component.
-                     */
-                    () => {
-                      if (oskRef.current) return
-                      playSound('navigate')
-                      setCurrentIndex(index)
-                      setPreviewEnabled(true)
-                      restartPreview()
+              (index) => {
+                const game = filteredGames[index]
+                return (
+                  <button
+                    key={game.id}
+                    data-game-card
+                    style={
+                      filteredGames.length > 96
+                        ? {
+                            gridRow: Math.floor(index / columns) + 1,
+                            gridColumn: (index % columns) + 1
+                          }
+                        : undefined
                     }
-                  }
-                  onMouseEnter={
-                    /**
-                     * Handle onMouseEnter on this App control using the current render's values; delegate state/IPC work to its owning component.
-                     */
-                    (event) => {
-                      if (launchBusyRef.current || oskRef.current) return
-                      // Pointer, keyboard and controller share one focus-owned sound trigger.
-                      if (document.activeElement === event.currentTarget) {
+                    data-game-id={game.id}
+                    aria-label={game.title}
+                    aria-pressed={index === focusedIndex}
+                    tabIndex={index === focusedIndex ? 0 : -1}
+                    ref={index === focusedIndex ? selectedCardRef : null}
+                    onFocus={
+                      /**
+                       * Handle onFocus on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () => {
+                        if (oskRef.current) return
+                        playSound('navigate')
+                        setCurrentIndex(index)
                         setPreviewEnabled(true)
                         restartPreview()
-                      } else event.currentTarget.focus({ preventScroll: true })
+                      }
                     }
-                  }
-                  onMouseLeave={
-                    /**
-                     * Handle onMouseLeave on this App control using the current render's values; delegate state/IPC work to its owning component.
-                     */
-                    () => {
-                      stopPreview()
-                      setPreviewEnabled(false)
+                    onMouseEnter={
+                      /**
+                       * Handle onMouseEnter on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      (event) => {
+                        if (launchBusyRef.current || oskRef.current) return
+                        // Pointer, keyboard and controller share one focus-owned sound trigger.
+                        if (document.activeElement === event.currentTarget) {
+                          setPreviewEnabled(true)
+                          restartPreview()
+                        } else event.currentTarget.focus({ preventScroll: true })
+                      }
                     }
-                  }
-                  onBlur={
-                    /**
-                     * Handle onBlur on this App control using the current render's values; delegate state/IPC work to its owning component.
-                     */
-                    () => {
-                      if (!launchBusyRef.current) {
+                    onMouseLeave={
+                      /**
+                       * Handle onMouseLeave on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () => {
                         stopPreview()
                         setPreviewEnabled(false)
                       }
                     }
-                  }
-                  onClick={
-                    /**
-                     * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
-                     */
-                    () => setCurrentIndex(index)
-                  }
-                  className={
-                    'poster-card transition-all duration-300 ' +
-                    (index === focusedIndex
-                      ? 'scale-105 opacity-100 ring-2 ring-blue-500 shadow-[0_0_25px_rgba(59,130,246,0.6)]'
-                      : 'opacity-80 hover:opacity-100')
-                  }
-                >
-                  {game.coverUrl ? (
-                    <img
-                      src={game.coverUrl}
-                      alt={game.title}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="poster-fallback">
-                      <ConsoleIcon platform={game.systemShort} />
-                      <strong>{game.systemShort}</strong>
-                      <span>{game.title}</span>
+                    onBlur={
+                      /**
+                       * Handle onBlur on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () => {
+                        if (!launchBusyRef.current) {
+                          stopPreview()
+                          setPreviewEnabled(false)
+                        }
+                      }
+                    }
+                    onClick={
+                      /**
+                       * Handle onClick on this App control using the current render's values; delegate state/IPC work to its owning component.
+                       */
+                      () => setCurrentIndex(index)
+                    }
+                    className={
+                      'poster-card transition-all duration-300 ' +
+                      (index === focusedIndex
+                        ? 'scale-105 opacity-100 ring-2 ring-blue-500 shadow-[0_0_25px_rgba(59,130,246,0.6)]'
+                        : 'opacity-80 hover:opacity-100')
+                    }
+                  >
+                    {game.coverUrl ? (
+                      <img
+                        src={game.coverUrl}
+                        alt={game.title}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="poster-fallback">
+                        <ConsoleIcon platform={game.systemShort} />
+                        <strong>{game.systemShort}</strong>
+                        <span>{game.title}</span>
+                      </div>
+                    )}
+                    <div className="poster-caption absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 to-transparent text-left">
+                      <span className="text-[10px] font-bold tracking-widest text-blue-200">
+                        {game.systemShort}
+                      </span>
+                      <p className="mt-1 text-xs font-bold line-clamp-2">{game.title}</p>
                     </div>
-                  )}
-                  <div className="poster-caption absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 to-transparent text-left">
-                    <span className="text-[10px] font-bold tracking-widest text-blue-200">
-                      {game.systemShort}
-                    </span>
-                    <p className="mt-1 text-xs font-bold line-clamp-2">{game.title}</p>
-                  </div>
-                </button>
-              )
+                  </button>
+                )
+              }
             )}
           </div>
         </section>

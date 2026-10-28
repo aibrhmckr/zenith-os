@@ -395,6 +395,7 @@ release/
 !src/renderer/src/assets/**
 
 # AI & Graph Tools
+.test-tmp/
 .codex/
 AGENTS.md
 graphify-out/

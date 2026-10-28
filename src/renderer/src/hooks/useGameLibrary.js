@@ -45,6 +45,7 @@ export default function useGameLibrary() {
    * Latest preview events by game ID, merged into slower artwork scan responses.
    */
   const mediaUpdates = useRef(new Map())
+  const flushPendingPatches = useRef(() => {})
   /**
    * Merge completed audio/video events into a slower artwork response so arriving snapshots do not
    * erase newly downloaded previews.
@@ -107,8 +108,13 @@ export default function useGameLibrary() {
         if (!mounted.current) return
         setGames(local.map(withLatestMedia))
         setLoading(false)
-        const result = await window.electronAPI.scanAndScrapeGames({ force, gameId })
+        const result = await window.electronAPI.scanAndScrapeGames({
+          force,
+          gameId,
+          reuseSnapshot: true
+        })
         if (!mounted.current) return
+        flushPendingPatches.current()
         setGames(result.games.map(withLatestMedia))
         setWarning(result.warning || '')
       } catch (error) {
@@ -136,62 +142,42 @@ export default function useGameLibrary() {
     const removeLibrary = window.electronAPI.onLibraryChanged(() => {
       void refresh(false)
     })
-    const remove = window.electronAPI.onScrapeProgress(
-      /**
-       * Consume onScrapeProgress application payloads in remove; the enclosing effect disposes the IPC subscription on unmount.
-       *
-       * @param {*} update - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-       */
-      (update) => {
-        setProgress({ completed: update.completed, total: update.total })
-        setGames(
-          /**
-           * Compute remove's next React state from the latest queued value, avoiding stale render snapshots.
-           *
-           * @param {*} previous - Previous state used for an immutable update.
-           */
-          (previous) =>
-            previous.map(
-              /**
-               * Project each previous entry for remove; preserve input ordering in the derived collection.
-               *
-               * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-               */
-              (game) => (game.id === update.game.id ? withLatestMedia(update.game) : game)
-            )
+    const patches = new Map()
+    let latestProgress = null,
+      patchTimer = null
+    const flushPatches = () => {
+      clearTimeout(patchTimer)
+      patchTimer = null
+      if (!mounted.current) return
+      if (latestProgress) setProgress(latestProgress)
+      const batch = new Map(patches)
+      patches.clear()
+      if (batch.size)
+        setGames((previous) =>
+          previous.map((game) => {
+            const patch = batch.get(game.id)
+            return patch
+              ? withLatestMedia({ ...game, ...patch, media: { ...game.media, ...patch.media } })
+              : game
+          })
         )
-        if (update.warning) setWarning(update.warning)
-      }
-    )
-    const removeMedia = window.electronAPI.onGameMediaUpdated(
-      /**
-       * Consume onGameMediaUpdated application payloads in removeMedia; the enclosing effect disposes the IPC subscription on unmount.
-       *
-       * @param {*} update - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-       */
-      (update) => {
-        mediaUpdates.current.set(update.gameId, update)
-        setGames(
-          /**
-           * Compute removeMedia's next React state from the latest queued value, avoiding stale render snapshots.
-           *
-           * @param {*} previous - Previous state used for an immutable update.
-           */
-          (previous) =>
-            previous.map(
-              /**
-               * Project each previous entry for removeMedia; preserve input ordering in the derived collection.
-               *
-               * @param {*} game - Value supplied by the enclosing operation; interpreted in this callback's local scope.
-               */
-              (game) =>
-                game.gameId === update.gameId
-                  ? { ...game, ...update, media: { ...game.media, ...update.media } }
-                  : game
-            )
-        )
-      }
-    )
+    }
+    flushPendingPatches.current = flushPatches
+    const schedule = () => {
+      if (!patchTimer) patchTimer = setTimeout(flushPatches, 100)
+    }
+    const remove = window.electronAPI.onScrapeProgress((update) => {
+      latestProgress = { completed: update.completed, total: update.total }
+      for (const game of update.games || (update.game ? [update.game] : []))
+        patches.set(game.id, game)
+      if (update.warning) setWarning(update.warning)
+      schedule()
+    })
+    const removeMedia = window.electronAPI.onGameMediaUpdated((game) => {
+      mediaUpdates.current.set(game.gameId, game)
+      patches.set(game.id, game)
+      schedule()
+    })
     const initialScan = setTimeout(
       /**
        * Run delayed initialScan work only after the owning debounce/wait expires; the surrounding lifecycle owns cancellation.
@@ -206,6 +192,8 @@ export default function useGameLibrary() {
      */
     return () => {
       clearTimeout(initialScan)
+      clearTimeout(patchTimer)
+      flushPendingPatches.current = () => {}
       mounted.current = false
       remove()
       removeMedia()
@@ -256,6 +244,7 @@ export default function useGameLibrary() {
         })
         if (!result.success) throw Error(result.error)
         if (mounted.current) {
+          flushPendingPatches.current()
           mediaUpdates.current.set(result.game.gameId, result.game)
           setGames((current) =>
             current.map((entry) => (entry.gameId === result.game.gameId ? result.game : entry))

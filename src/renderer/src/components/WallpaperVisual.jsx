@@ -1,9 +1,19 @@
 /* eslint-disable react/prop-types -- Main-validated wallpaper descriptor. */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import LuminescentGlade from './LuminescentGlade'
 
 /** Procedural themes and always-muted local videos; background players pause when obscured/hidden. */
-export default function WallpaperVisual({ wallpaper, playing = false }) {
+function WallpaperVisual({ wallpaper, playing = false, thumbnail = false }) {
+  const container = useRef(null)
+  const [visible, setVisible] = useState(!thumbnail)
+  useEffect(() => {
+    if (!thumbnail) return
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), {
+      rootMargin: '160px'
+    })
+    if (container.current) observer.observe(container.current)
+    return () => observer.disconnect()
+  }, [thumbnail])
   const video = useRef(null)
   const [failedUrl, setFailedUrl] = useState(null)
   const failed = wallpaper.url && wallpaper.url === failedUrl
@@ -23,6 +33,12 @@ export default function WallpaperVisual({ wallpaper, playing = false }) {
       document.removeEventListener('visibilitychange', sync)
     }
   }, [playing, wallpaper.url, failed])
+  if (thumbnail)
+    return (
+      <div ref={container} className="wallpaper-preview-window">
+        {visible && <WallpaperVisual wallpaper={wallpaper} />}
+      </div>
+    )
   if (wallpaper.type === 'theme' || failed)
     return (
       <div
@@ -49,5 +65,15 @@ export default function WallpaperVisual({ wallpaper, playing = false }) {
         onError={() => setFailedUrl(wallpaper.url)}
       />
     )
-  return <img src={wallpaper.url} alt="" onError={() => setFailedUrl(wallpaper.url)} />
+  return (
+    <img
+      src={wallpaper.url}
+      loading="lazy"
+      decoding="async"
+      alt=""
+      onError={() => setFailedUrl(wallpaper.url)}
+    />
+  )
 }
+
+export default memo(WallpaperVisual)

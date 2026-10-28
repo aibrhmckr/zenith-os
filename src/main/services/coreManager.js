@@ -1,7 +1,9 @@
 import fs from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { inflateRawSync } from 'node:zlib'
+import { inflateRawSync, crc32 } from 'node:zlib'
+import { Worker } from 'node:worker_threads'
+import { createHash } from 'node:crypto'
 
 /**
  * Ordered default libretro core candidates by console; coreFilesFor derives native host
@@ -145,8 +147,11 @@ export function installedCorePath(retroarchDir, name, platform = process.platfor
 export function extractCore(
   zip,
   expected,
-  platform = expected.endsWith('.so') ? 'linux' : 'win32'
+  platform = expected.endsWith('.so') ? 'linux' : 'win32',
+  inflate = inflateRawSync,
+  checksum = crc32
 ) {
+  const MAX = 200 * 1024 * 1024
   // Read the central directory, then inflate exactly the allowlisted DLL; never extract paths.
   let end = zip.length - 22
   while (end >= Math.max(0, zip.length - 65557) && zip.readUInt32LE(end) !== 0x06054b50) end--
@@ -173,14 +178,8 @@ export function extractCore(
       const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28)
       if (start + compressed > zip.length) throw Error('Truncated archive')
       const data = zip.subarray(start, start + compressed)
-      output = method === 0 ? Buffer.from(data) : inflateRawSync(data, { maxOutputLength: MAX })
-      let actual = 0xffffffff
-      for (const byte of output) {
-        actual ^= byte
-        for (let b = 0; b < 8; b++) actual = (actual >>> 1) ^ (actual & 1 ? 0xedb88320 : 0)
-      }
-      if (output.length !== size || (actual ^ 0xffffffff) >>> 0 !== crc)
-        throw Error('Core checksum mismatch')
+      output = method === 0 ? Buffer.from(data) : inflate(data, { maxOutputLength: MAX })
+      if (output.length !== size || checksum(output) !== crc) throw Error('Core checksum mismatch')
     }
     offset += 46 + nameSize + extra + comment
   }
@@ -207,6 +206,64 @@ export function extractCore(
   )
     throw Error('Core is not Windows x64')
   return output
+}
+/** Inflate and validate off the Electron thread. Only trusted source and bytes enter this worker. */
+export function extractCoreAsync(zip, expected, platform) {
+  return new Promise((resolve, reject) => {
+    const bytes = typeof zip === 'string' ? null : new Uint8Array(zip.length)
+    if (bytes) bytes.set(zip)
+    const source = `const { parentPort, workerData } = require('node:worker_threads');
+      const zlib = require('node:zlib');
+      try {
+        const extract = (${extractCore.toString()});
+        const output = extract(workerData.archive ? require('node:fs').readFileSync(workerData.archive) : Buffer.from(workerData.bytes), workerData.expected, workerData.platform, zlib.inflateRawSync, zlib.crc32);
+        const result = new Uint8Array(output.length); result.set(output);
+        parentPort.postMessage({ bytes: result }, [result.buffer]);
+      } catch (error) { parentPort.postMessage({ error: error.message }); }`
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { bytes, archive: typeof zip === 'string' ? zip : null, expected, platform },
+      transferList: bytes ? [bytes.buffer] : []
+    })
+    let settled = false
+    const finish = (error, result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      void worker.terminate()
+      if (error) reject(error)
+      else resolve(result)
+    }
+    const timer = setTimeout(() => finish(Error('Core extraction timed out')), 120000)
+    worker.once('message', (message) =>
+      finish(
+        message.error ? Error(message.error) : null,
+        message.bytes && Buffer.from(message.bytes.buffer)
+      )
+    )
+    worker.once('error', (error) => finish(error))
+    worker.once('exit', () => {
+      if (!settled) finish(Error('Core extraction worker stopped'))
+    })
+  })
+}
+
+/** Verify published bytes by streaming, avoiding a second full DLL allocation. */
+async function fileDigest(file) {
+  const hash = createHash('sha256')
+  const handle = await fs.promises.open(file, 'r')
+  try {
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer)
+      if (!bytesRead) break
+      hash.update(buffer.subarray(0, bytesRead))
+    }
+  } finally {
+    // Windows must release the DLL handle before verification failure can remove/replace it.
+    await handle.close()
+  }
+  return hash.digest('hex')
 }
 /**
  * Bind physical verification and atomic core installation to one RetroArch directory, host, and
@@ -297,13 +354,46 @@ export function createCoreManager({
            * metadata-cleanup, and verification errors.
            */
           const report = (value) => onProgress({ id: 'core:' + name, name, ...value })
-          report({ status: 'active', phase: 'downloading', received: 0, total: null })
+          let receipt
+          if (update && pathFor(name)) {
+            try {
+              const saved = JSON.parse(
+                await fs.promises.readFile(destination + '.zenith-update.json', 'utf8')
+              )
+              const stat = await fs.promises.stat(destination)
+              if (saved.size === stat.size && saved.mtimeMs === stat.mtimeMs) receipt = saved
+            } catch {
+              /* Unverified legacy files are downloaded and validated again. */
+            }
+          }
           let stage = 'download'
+          const archive = destination + '.' + randomUUID() + '.download-part'
           try {
             const response = await fetchImpl(url, {
               signal: AbortSignal.timeout(120000),
+              headers: receipt?.etag
+                ? { 'If-None-Match': receipt.etag }
+                : receipt?.lastModified
+                  ? { 'If-Modified-Since': receipt.lastModified }
+                  : {},
               redirect: 'error'
             })
+            if (response.status === 304 && receipt && pathFor(name)) {
+              await response.body?.cancel()
+              const temporary = destination + '.' + randomUUID() + '.receipt-part'
+              try {
+                await fs.promises.writeFile(
+                  temporary,
+                  JSON.stringify({ ...receipt, checkedAt: now() }),
+                  { flag: 'wx' }
+                )
+                await fs.promises.rename(temporary, destination + '.zenith-update.json')
+              } finally {
+                await fs.promises.rm(temporary, { force: true })
+              }
+              return { success: true, core: name, upToDate: true }
+            }
+            report({ status: 'active', phase: 'downloading', received: 0, total: null })
             if (!response.ok) {
               await response.body?.cancel()
               throw Error(`HTTP ${response.status}`)
@@ -314,21 +404,26 @@ export function createCoreManager({
               Number(response.headers.get('content-length')) > MAX
             )
               throw Error('Core download failed or exceeds 200 MB.')
-            const chunks = []
+            await fs.promises.mkdir(dirname(destination), { recursive: true })
+            const archiveFile = await fs.promises.open(archive, 'wx')
             let bytes = 0
-            for await (const chunk of response.body) {
-              bytes += chunk.length
-              if (bytes > MAX) throw Error('Core download exceeds 200 MB.')
-              chunks.push(Buffer.from(chunk))
-              report({
-                status: 'active',
-                received: bytes,
-                total: Number(response.headers.get('content-length')) || null
-              })
+            try {
+              for await (const chunk of response.body) {
+                bytes += chunk.length
+                if (bytes > MAX) throw Error('Core download exceeds 200 MB.')
+                await archiveFile.writeFile(chunk)
+                report({
+                  status: 'active',
+                  received: bytes,
+                  total: Number(response.headers.get('content-length')) || null
+                })
+              }
+            } finally {
+              await archiveFile.close()
             }
             report({ status: 'active', phase: 'verifying' })
             stage = 'extract'
-            const dll = extractCore(Buffer.concat(chunks), name, platform)
+            const dll = await extractCoreAsync(archive, name, platform)
             stage = 'write'
             await fs.promises.mkdir(dirname(destination), { recursive: true })
             /**
@@ -363,8 +458,8 @@ export function createCoreManager({
               await fs.promises.rename(temporary, destination)
               published = true
               stage = 'verify'
-              const written = await fs.promises.readFile(destination)
-              if (!written.equals(dll) || !pathFor(name)) {
+              const written = await fileDigest(destination)
+              if (written !== createHash('sha256').update(dll).digest('hex') || !pathFor(name)) {
                 await fs.promises.rm(destination, { force: true })
                 throw Error('Installed core is missing, unreadable or differs from the download.')
               }
@@ -372,6 +467,8 @@ export function createCoreManager({
               await fs.promises.writeFile(
                 receiptTemporary,
                 JSON.stringify({
+                  etag: response.headers.get('etag'),
+                  lastModified: response.headers.get('last-modified'),
                   checkedAt: now(),
                   size: stat.size,
                   mtimeMs: stat.mtimeMs
@@ -402,6 +499,8 @@ export function createCoreManager({
           } catch (error) {
             report({ status: 'failed', error: error.message })
             failure = `Core ${stage} failed (${error.code || error.message}). Source: ${url}. Target: ${destination}`
+          } finally {
+            await fs.promises.rm(archive, { force: true }).catch(() => {})
           }
         }
         return { success: false, error: failure }

@@ -8,10 +8,10 @@ import { taskVisibility } from '../src/renderer/src/hooks/downloadPresentation.j
 
 test('generated original WAVs have exact PCM framing, quiet endpoints and unclipped non-silent samples', () => {
   for (const [name, duration] of Object.entries({
-    navigate: 0.048,
-    toggle: 0.09,
-    back: 0.08,
-    launch: 0.72
+    navigate: 0.085,
+    toggle: 0.22,
+    back: 0.2,
+    launch: 0.9
   })) {
     const wav = synthesize(name)
     assert.equal(wav.toString('ascii', 0, 4), 'RIFF')
@@ -27,6 +27,14 @@ test('generated original WAVs have exact PCM framing, quiet endpoints and unclip
     assert(Math.abs(samples.at(-1)) < 10, name + ' click-free ending')
     assert(Math.max(...samples.map(Math.abs)) > 1000)
     assert(Math.max(...samples.map(Math.abs)) < 25000)
+    assert(
+      Math.abs(samples.reduce((sum, sample) => sum + sample, 0) / samples.length) < 100,
+      name + ' has no significant DC offset'
+    )
+    assert(
+      samples.every((sample, i) => !i || Math.abs(sample - samples[i - 1]) < 2200),
+      name + ' has no abrupt waveform discontinuities'
+    )
     assert.deepEqual(wav, synthesize(name), 'Reproducible build artifact')
   }
 })

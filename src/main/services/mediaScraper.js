@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import { join, posix } from 'node:path'
 import { mediaRoot, gameMediaDirectory } from './mediaPaths.js'
@@ -467,13 +468,27 @@ export function createMediaDownloader({
   fetchImpl = globalThis.fetch,
   onDownload = () => {},
   onDiagnostic = () => {},
-  timeoutMs = 15000
+  timeoutMs = 15000,
+  jobTimeoutMs = 45000
 } = {}) {
   mediaRoot(userData)
   /**
    * Injected fetch and one per-request timeout, shared across search, metadata, and streaming.
    */
-  const options = { fetchImpl, timeoutMs, onDiagnostic, onDownload }
+  const jobs = new AsyncLocalStorage()
+  const options = {
+    timeoutMs,
+    onDiagnostic,
+    onDownload,
+    fetchImpl: (url, init = {}) => {
+      const job = jobs.getStore()
+      job?.throwIfAborted()
+      return fetchImpl(url, {
+        ...init,
+        signal: job ? (init.signal ? AbortSignal.any([job, init.signal]) : job) : init.signal
+      })
+    }
+  }
   /**
    * Shared discovery promises with expiry; rejected requests are evicted for retry.
    */
@@ -485,6 +500,8 @@ export function createMediaDownloader({
    * @param {string|URL} url - Provider URL or parsed URL subject to the helper's origin/path policy.
    */
   function json(url) {
+    jobs.getStore()?.throwIfAborted()
+    for (const [key, entry] of cache) if (Date.now() - entry.at > DAY) cache.delete(key)
     let cached = cache.get(url)
     if (!cached || Date.now() - cached.at > DAY) {
       const promise = request(url, options).catch(
@@ -500,6 +517,7 @@ export function createMediaDownloader({
       )
       cached = { at: Date.now(), promise }
       cache.set(url, cached)
+      while (cache.size > 128) cache.delete(cache.keys().next().value)
     }
     return cached.promise
   }
@@ -713,27 +731,28 @@ export function createMediaDownloader({
          *
          * @param {*} kind - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
-        async (kind) => {
-          if (!Object.hasOwn(TARGETS, kind)) return
-          result[kind] = null
-          try {
-            const directory = gameMediaDirectory(userData, game.gameId)
-            const gameTdb = join(directory, 'cover-gametdb.jpg')
-            const cached =
-              kind === 'boxart' && exists(gameTdb) ? gameTdb : join(directory, TARGETS[kind])
-            result[kind] =
-              !force && exists(cached)
-                ? cached
-                : (await find(game, kind, directory, force)) || (exists(cached) ? cached : null)
-          } catch {
-            /* Music and video fail independently, leaving null and no UI error. */
-          }
-          try {
-            await onResult(kind, result[kind])
-          } catch {
-            /* A closed renderer/cache error cannot cancel the other download. */
-          }
-        }
+        (kind) =>
+          jobs.run(AbortSignal.timeout(jobTimeoutMs), async () => {
+            if (!Object.hasOwn(TARGETS, kind)) return
+            result[kind] = null
+            try {
+              const directory = gameMediaDirectory(userData, game.gameId)
+              const gameTdb = join(directory, 'cover-gametdb.jpg')
+              const cached =
+                kind === 'boxart' && exists(gameTdb) ? gameTdb : join(directory, TARGETS[kind])
+              result[kind] =
+                !force && exists(cached)
+                  ? cached
+                  : (await find(game, kind, directory, force)) || (exists(cached) ? cached : null)
+            } catch {
+              /* Music and video fail independently, leaving null and no UI error. */
+            }
+            try {
+              await onResult(kind, result[kind])
+            } catch {
+              /* A closed renderer/cache error cannot cancel the other download. */
+            }
+          })
       )
     )
     return result

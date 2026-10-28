@@ -19,6 +19,9 @@ export function createFileBrowser({
     ...new Set((roots || [home, desktop, downloads]).filter(Boolean).map((root) => resolve(root)))
   ]
   const authorize = (path) => assertAllowedPath(path, approvedRoots)
+  const listings = new Map()
+  const summaryCache = new Map()
+  const collator = new Intl.Collator(undefined, { numeric: true })
   const tickets = new Map()
   const folders = new Map()
   const summaries = createFolderSummary()
@@ -117,7 +120,15 @@ export function createFileBrowser({
       const stat = await fs.lstat(ticket.path)
       if (generation !== summaryRevision) return { canceled: true }
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('Folder is unavailable.')
-      return summaries.scan(ticket.path)
+      const cached = summaryCache.get(ticket.path)
+      if (cached && cached.mtime === stat.mtimeMs && Date.now() - cached.at < 10000)
+        return cached.value
+      const value = await summaries.scan(ticket.path)
+      if (!value.canceled) {
+        summaryCache.set(ticket.path, { at: Date.now(), mtime: stat.mtimeMs, value })
+        while (summaryCache.size > 64) summaryCache.delete(summaryCache.keys().next().value)
+      }
+      return value
     },
     /** Register only a validated raster/video selection; replace/revoke the previous preview. */
     async preview(token) {
@@ -148,18 +159,30 @@ export function createFileBrowser({
       path = localPath(path)
       const stat = await fs.lstat(path)
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('Folder is unavailable.')
-      const entries = (await fs.readdir(path, { withFileTypes: true }))
-        .filter(
-          (entry) =>
-            !entry.isSymbolicLink() &&
-            (entry.isDirectory() ||
-              (entry.isFile() && allowed.includes(extname(entry.name).slice(1).toLowerCase())))
-        )
-        .sort(
-          (a, b) =>
-            Number(b.isDirectory()) - Number(a.isDirectory()) ||
-            a.name.localeCompare(b.name, undefined, { numeric: true })
-        )
+      const cacheKey = kind + ':' + path
+      let cached = listings.get(cacheKey)
+      if (
+        !cached ||
+        offset === 0 ||
+        cached.mtime !== stat.mtimeMs ||
+        Date.now() - cached.at > 30000
+      ) {
+        const entries = (await fs.readdir(path, { withFileTypes: true }))
+          .filter(
+            (entry) =>
+              !entry.isSymbolicLink() &&
+              (entry.isDirectory() ||
+                (entry.isFile() && allowed.includes(extname(entry.name).slice(1).toLowerCase())))
+          )
+          .sort(
+            (a, b) =>
+              Number(b.isDirectory()) - Number(a.isDirectory()) || collator.compare(a.name, b.name)
+          )
+        cached = { entries, mtime: stat.mtimeMs, at: Date.now() }
+        listings.set(cacheKey, cached)
+        while (listings.size > 8) listings.delete(listings.keys().next().value)
+      }
+      const entries = cached.entries
       for (const [id, ticket] of tickets) if (ticket.expires < Date.now()) tickets.delete(id)
       const page = await Promise.all(
         entries.slice(offset, offset + 250).map(async (entry) => {

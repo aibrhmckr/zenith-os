@@ -12,7 +12,7 @@ import {
   taskError
 } from '../src/renderer/src/hooks/downloadPresentation.js'
 
-test('clear history persists removal of finished/failed jobs without touching pending work', (t) => {
+test('clear history persists removal of finished/failed jobs without touching pending work', async (t) => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-clear-history-'))
   t.after(() => fs.rmSync(userData, { recursive: true, force: true }))
   const events = []
@@ -27,8 +27,10 @@ test('clear history persists removal of finished/failed jobs without touching pe
     ['active', 'queued']
   )
   assert.equal(events.at(-1).length, 2)
+  await center.flush()
   assert.equal(JSON.parse(fs.readFileSync(path.join(userData, 'downloads.json'))).length, 2)
   center.report({ id: 'active', status: 'completed' })
+  await center.flush()
   assert.equal(center.snapshot().find((t) => t.id === 'active').status, 'completed')
 })
 
@@ -80,7 +82,7 @@ test('download titles are localized without raw translation keys', () => {
   }
 })
 
-test('download history reports real percentages, preserves completion and interrupts stale jobs', (t) => {
+test('download history reports real percentages, preserves completion and interrupts stale jobs', async (t) => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'zenith-downloads-'))
   t.after(() => fs.rmSync(userData, { recursive: true, force: true }))
   const events = []
@@ -93,7 +95,7 @@ test('download history reports real percentages, preserves completion and interr
     received: 25,
     total: 100
   })
-  center.flush()
+  await center.flush()
   assert.equal(events.at(-1)[0].percent, 25)
   const restored = createDownloadCenter({ userData })
   assert.equal(restored.snapshot()[0].status, 'interrupted')
@@ -102,6 +104,7 @@ test('download history reports real percentages, preserves completion and interr
   center.report({ id: 'video', status: 'active', received: 0, total: null })
   assert.equal(center.snapshot()[0].percent, null)
   center.report({ id: 'video', status: 'failed', error: 'network unavailable' })
+  await center.flush()
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(userData, 'downloads.json')))[0].error,
     'network unavailable'

@@ -70,7 +70,7 @@ export function createWallpaperManager({ userData, preferences, urlFor = mediaUr
     if (patch.selectedId !== undefined && !state.items.some((item) => item.id === patch.selectedId))
       throw Error('Wallpaper is unavailable.')
     await preferences.update((current) => ({ wallpapers: { ...current.wallpapers, ...patch } }))
-    return list()
+    return { ...state, ...patch }
   }
   const importFile = async (source) => {
     await ownedDirectory()

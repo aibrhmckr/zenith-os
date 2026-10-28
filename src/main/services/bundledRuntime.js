@@ -24,6 +24,9 @@ export async function seedBundledRetroArch({
   const name = platform === 'win32' ? 'retroarch.exe' : 'retroarch'
   const source = path.join(resourcesPath, 'emulators', 'retroarch')
   let copied = false
+  let complete = true
+  const critical = []
+  const receiptPath = path.join(retroarchDir, '.zenith-seed.json')
   /**
    * Identify CFG/autoconfig entries whose lock may be skipped without blocking the whole runtime
    * preparation.
@@ -42,6 +45,7 @@ export async function seedBundledRetroArch({
   const tolerateLock = (relative, error) => {
     if (!optionalConfig(relative) || !['EBUSY', 'EPERM', 'EACCES'].includes(error.code))
       return false
+    complete = false
     log(`[RetroArch setup] Skipped locked configuration ${relative}: ${error.code}`)
     return true
   }
@@ -81,6 +85,7 @@ export async function seedBundledRetroArch({
     try {
       // Preserve newer binaries and user-edited configs, even if their size differs.
       const current = await existing(destination)
+      if (relative === name || /\.(dll|so(?:\.[0-9.]+)?)$/i.test(relative)) critical.push(relative)
       if (valid(current)) return
       const file = path.join(source, relative)
       if (current?.isFile() && (await fsImpl.stat(file)).size === 0) return
@@ -134,7 +139,47 @@ export async function seedBundledRetroArch({
     }
   }
   await fsImpl.access(path.join(source, name))
+  const sourceStat = await fsImpl.stat(path.join(source, name))
+  const identity = JSON.stringify({ source, size: sourceStat.size, mtime: sourceStat.mtimeMs })
+  // Existing binaries may have been updated independently. Verify their physical presence,
+  // but avoid enumerating thousands of unchanged autoconfig files on every application start.
+  try {
+    const receipt = JSON.parse(await fsImpl.readFile(receiptPath, 'utf8'))
+    if (
+      receipt.identity === identity &&
+      Array.isArray(receipt.critical) &&
+      receipt.critical.includes(name)
+    ) {
+      let ready = true
+      for (const file of receipt.critical) {
+        if (
+          typeof file !== 'string' ||
+          path.isAbsolute(file) ||
+          file.split(/[\\/]/).includes('..') ||
+          !valid(await existing(path.join(retroarchDir, file)))
+        ) {
+          ready = false
+          break
+        }
+      }
+      if (ready) return false
+    }
+  } catch {
+    /* First run, changed bundle or missing dependency: repair incrementally. */
+  }
   await walk()
   await copy(name)
+  if (complete && fsImpl.writeFile) {
+    const temporary = receiptPath + '.' + randomUUID() + '.tmp'
+    try {
+      await fsImpl.writeFile(temporary, JSON.stringify({ identity, critical }), { flag: 'wx' })
+      await fsImpl.rename(temporary, receiptPath)
+    } catch (error) {
+      // This receipt is an optimization; successfully seeded binaries remain usable.
+      log(`[RetroArch setup] Could not cache runtime receipt: ${error.code}`)
+    } finally {
+      await fsImpl.rm(temporary, { force: true }).catch(() => {})
+    }
+  }
   return copied
 }

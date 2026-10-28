@@ -128,7 +128,7 @@ export function createLibraryStore(userData) {
    * Reconstruct game records for existing, nonexcluded imports with deterministic IDs, platform
    * detection, and adjacent artwork.
    */
-  const list = () =>
+  const list = (skip = () => false) =>
     state.imported
       .filter(
         /**
@@ -136,7 +136,8 @@ export function createLibraryStore(userData) {
          *
          * @param {*} file - Value supplied by the enclosing operation; interpreted in this callback's local scope.
          */
-        (file) => !excluded(file) && fs.statSync(file, { throwIfNoEntry: false })?.isFile()
+        (file) =>
+          !skip(file) && !excluded(file) && fs.statSync(file, { throwIfNoEntry: false })?.isFile()
       )
       .map(
         /**

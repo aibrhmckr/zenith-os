@@ -44,10 +44,13 @@ export function classifyGpu(info = {}) {
 /** Single-flight, bounded GPU queries; an unavailable GPU service never blocks launch. */
 export function createHardwareDetector({ app, publish = () => {}, timeoutMs = 3000 }) {
   let snapshot = classifyGpu(),
-    pending = null
+    pending = null,
+    checkedAt = 0
   return {
     snapshot: () => structuredClone(snapshot),
-    detect() {
+    detect({ force = false } = {}) {
+      if (!force && checkedAt && Date.now() - checkedAt < 60000)
+        return Promise.resolve(structuredClone(snapshot))
       if (pending) return pending
       pending = (async () => {
         let timer
@@ -68,6 +71,7 @@ export function createHardwareDetector({ app, publish = () => {}, timeoutMs = 30
             })
           ])
           snapshot = classifyGpu(info)
+          checkedAt = Date.now()
         } catch {
           snapshot = { ...classifyGpu(), unavailable: true }
         } finally {

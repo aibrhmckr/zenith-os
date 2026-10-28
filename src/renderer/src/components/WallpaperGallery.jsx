@@ -328,7 +328,7 @@ export default function WallpaperGallery({ model, playSound }) {
                     }
                   >
                     <div className="wallpaper-thumbnail">
-                      <WallpaperVisual wallpaper={item} />
+                      <WallpaperVisual wallpaper={item} thumbnail />
                     </div>
                     <span className="wallpaper-card-title">{item.name}</span>
                     {selecting && item.type !== 'theme' && (

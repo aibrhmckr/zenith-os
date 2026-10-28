@@ -8,7 +8,8 @@ export default function GameSpotlight({ activeGame }) {
   const game = activeGame
   const [failedLogos, setFailedLogos] = useState([])
   useEffect(() => {
-    console.log('[GameSpotlight Data]:', activeGame)
+    if (import.meta.env.DEV && localStorage.getItem('zenith-debug') === 'true')
+      console.log('[GameSpotlight Data]:', activeGame)
   }, [activeGame])
   const logo = [game.logoUrl, game.clearLogo, game.logoPath].find(
     (value) => typeof value === 'string' && value.trim() && !failedLogos.includes(value)

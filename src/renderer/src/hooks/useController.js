@@ -201,15 +201,23 @@ export default function useController(onFrame) {
          */
         const released = (index) => !buttons[index] && !!previous[index]
         try {
-          callbackRef.current({
-            hit,
-            released,
-            buttons,
-            axes,
-            move,
-            now,
-            inputMode: modeRef.current
-          })
+          // Idle pads need polling, but not DOM/modal routing. Preserve held inputs and releases.
+          if (
+            move ||
+            buttons.some(Boolean) ||
+            axes.some(Boolean) ||
+            previous.some(Boolean) ||
+            previousAxes.some(Boolean)
+          )
+            callbackRef.current({
+              hit,
+              released,
+              buttons,
+              axes,
+              move,
+              now,
+              inputMode: modeRef.current
+            })
         } catch (error) {
           console.error('Controller frame failed:', error)
         }

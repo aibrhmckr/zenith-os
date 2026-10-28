@@ -310,6 +310,12 @@ export function createGuideService({
         const file = join(dir, 'index.json')
         const cached = read(file)
         if (
+          cached?.missing &&
+          cached.title === game.title &&
+          Date.now() - cached.checkedAt < 24 * 60 * 60 * 1000
+        )
+          return null
+        if (
           validId(cached?.identifier) &&
           Array.isArray(cached.leaves) &&
           cached.leaves.length &&
@@ -440,6 +446,10 @@ export function createGuideService({
           } catch {
             /* A missing scan should not prevent another matching manual. */
           }
+        }
+        if (!docs.length) {
+          await fs.promises.mkdir(dir, { recursive: true })
+          await save(file, { missing: true, title: game.title, checkedAt: Date.now() })
         }
         return null
       }

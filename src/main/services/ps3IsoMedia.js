@@ -72,13 +72,34 @@ export function createPs3IsoExtractor({ userData, executeImpl = execute, logger 
     if (!stat?.isFile()) return
     const directory = gameMediaDirectory(userData, game.gameId)
     const marker = join(directory, 'embedded-source.json')
+    const miss = join(directory, 'embedded-miss.json')
     const source = { path: game.path, size: stat.size, mtime: stat.mtimeMs }
-    const identity = JSON.stringify({ ...source, extractionVersion: 3 })
+    const identity = JSON.stringify({ ...source, extractionVersion: 4 })
+    const negative = await fs.promises
+      .readFile(miss, 'utf8')
+      .then(JSON.parse)
+      .catch(() => null)
+    if (
+      !force &&
+      negative?.identity === identity &&
+      Date.now() - negative.failedAt < 60 * 60 * 1000
+    )
+      throw Object.assign(Error('PS3 ISO: hiçbir geçerli hedef dosya çıkarılamadı'), {
+        code: 'PS3_ISO_EXTRACTION_FAILED'
+      })
     try {
+      const previous = JSON.parse(await fs.promises.readFile(marker, 'utf8'))
+      const cached = cachedPs3IsoMedia(userData, game)
+      const same = previous.identity === identity
+      const present = previous.present || []
+      // Absent targets are a valid result too. Missing formerly-present files still trigger repair.
       if (
         !force &&
-        (await fs.promises.readFile(marker, 'utf8')) === identity &&
-        Object.values(cachedPs3IsoMedia(userData, game)).every(Boolean)
+        same &&
+        present.every((kind) =>
+          kind === 'titleId' ? cachedPs3IsoTitleId(userData, game) : cached[kind]
+        ) &&
+        (!previous.failedAt || Date.now() - previous.failedAt < 60 * 60 * 1000)
       ) {
         logger.log('[7-Zip] ICON0/PIC1 durumu: çıkartıldı (yerel önbellek) — ' + game.path)
         return
@@ -91,6 +112,7 @@ export function createPs3IsoExtractor({ userData, executeImpl = execute, logger 
     const binary = sevenZip.path7z.replace(/([\\/])app\.asar(?=[\\/])/, '$1app.asar.unpacked')
     let extractionError = null
     let extractedTargets = 0
+    const present = []
     try {
       const format = await inspectIsoExtraction(binary, game.path, executeImpl)
       try {
@@ -141,6 +163,7 @@ export function createPs3IsoExtractor({ userData, executeImpl = execute, logger 
           await fs.promises.writeFile(target + '.tmp', bytes)
           await fs.promises.rename(target + '.tmp', target)
           extractedTargets++
+          present.push(Object.keys(FILES).find((kind) => FILES[kind] === name))
           logger.log('[7-Zip] ICON0/PIC1 durumu: çıkartıldı — ' + name + ' → ' + target)
         } catch (error) {
           logger.log('[7-Zip] ICON0/PIC1 durumu: bulunamadı — ' + name + ': ' + error.message)
@@ -166,12 +189,16 @@ export function createPs3IsoExtractor({ userData, executeImpl = execute, logger 
       }
       // A validated SFO/SFB title ID is useful even when this disc has no artwork.
       // A filename hint or an older cached image cannot prove this extraction succeeded.
-      if (titleId) extractedTargets++
+      if (titleId) {
+        extractedTargets++
+        present.push('titleId')
+      }
       if (!extractedTargets) {
         const error = new Error('PS3 ISO: hiçbir geçerli hedef dosya çıkarılamadı', {
           cause: extractionError || undefined
         })
         error.code = 'PS3_ISO_EXTRACTION_FAILED'
+        await fs.promises.writeFile(miss, JSON.stringify({ identity, failedAt: Date.now() }))
         logger.log('[7-Zip] Çıkarma başarısız: ' + error.message)
         throw error
       }
@@ -194,7 +221,8 @@ export function createPs3IsoExtractor({ userData, executeImpl = execute, logger 
           JSON.stringify({ ...source, titleId })
         )
       logger.log('[7-Zip] Title ID: ' + (titleId || 'bulunamadı') + ' — ' + game.path)
-      await fs.promises.writeFile(marker, identity)
+      await fs.promises.writeFile(marker, JSON.stringify({ identity, present }))
+      await fs.promises.rm(miss, { force: true })
     } finally {
       // Verify the resolved cleanup target belongs to this game's cache, never the ROM directory.
       const target = resolve(temporary),

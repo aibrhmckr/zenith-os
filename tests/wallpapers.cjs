@@ -84,6 +84,25 @@ app.once('browser-window-created', (_, window) => {
       )
       await open()
       assert.equal(await run("document.querySelectorAll('[data-wallpaper-card]').length"), 5)
+      await wait(
+        "document.querySelectorAll('.wallpaper-preview-window > .wallpaper-theme').length === 5"
+      )
+      const themePreviews =
+        await run(`Array.from(document.querySelectorAll('.wallpaper-preview-window > .wallpaper-theme'), theme => {
+        const rect = theme.getBoundingClientRect(), parent = theme.parentElement.getBoundingClientRect();
+        return { id: theme.className, height: rect.height, width: rect.width,
+          parentHeight: parent.height, background: getComputedStyle(theme).backgroundImage,
+          animated: theme.dataset.animated };
+      })`)
+      for (const preview of themePreviews) {
+        assert(preview.height > 50 && preview.width > 100, preview.id + ' has a visible canvas')
+        assert(
+          Math.abs(preview.height - preview.parentHeight) < 1,
+          preview.id + ' fills its thumbnail'
+        )
+        assert.equal(preview.animated, 'false', 'Gallery themes stay static to save GPU work')
+        if (!preview.id.includes('luminescent-glade')) assert.notEqual(preview.background, 'none')
+      }
       assert(await run("document.activeElement.hasAttribute('data-wallpaper-only')"))
       assert(
         await run("document.querySelector('dialog').getBoundingClientRect().height === innerHeight")
@@ -173,30 +192,16 @@ app.once('browser-window-created', (_, window) => {
         "document.querySelector('[data-wallpaper-card=retro-grid]').getAttribute('aria-pressed') === 'true'"
       )
       if (process.argv.includes('--screenshot')) {
-        const preview = new BrowserWindow({
-          width: 1280,
-          height: 800,
-          show: false,
-          webPreferences: {
-            offscreen: true,
-            preload: path.resolve(__dirname, '../out/preload/index.js'),
-            sandbox: false
-          }
-        })
-        await preview.loadFile(path.resolve(__dirname, '../out/renderer/index.html'))
-        const view = (code) => preview.webContents.executeJavaScript(code)
-        await delay(250)
-        await view("document.querySelector('[data-settings-trigger]').click()")
-        await delay(100)
-        await view("document.querySelector('[data-wallpaper-page]').click()")
-        await delay(300)
-        await view("document.querySelector('[data-wallpaper-select-mode]').click()")
-        await delay(300)
-        await delay(100)
+        // Capture the trusted application window; a second window must not bypass IPC isolation.
         const screenshot = path.join(root, 'gallery.png')
-        fs.writeFileSync(screenshot, (await preview.webContents.capturePage()).toPNG())
+        // Wake the hidden compositor first so it cannot return the previous Settings frame.
+        await window.webContents.capturePage(undefined, { stayAwake: true })
+        await delay(300)
+        fs.writeFileSync(
+          screenshot,
+          (await window.webContents.capturePage(undefined, { stayAwake: true })).toPNG()
+        )
         console.log('Gallery screenshot: ' + screenshot)
-        preview.destroy()
       }
 
       // Record an original silent clip locally so the test exercises a genuinely decodable video.

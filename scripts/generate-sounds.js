@@ -2,9 +2,32 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const SAMPLE_RATE = 44100
-const durations = { navigate: 0.048, toggle: 0.09, back: 0.08, launch: 0.72 }
+const durations = { navigate: 0.085, toggle: 0.22, back: 0.2, launch: 0.9 }
 
-/** Original mono PCM voices: continuous phase sweeps and click-free attack/release envelopes. */
+/** Raised-cosine edges prevent clicks without a pitch slide or a harsh noise transient. */
+function envelope(time, duration, attack, decay) {
+  if (time < 0 || time >= duration) return 0
+  const fadeIn = (1 - Math.cos(Math.PI * Math.min(1, time / attack))) / 2
+  const fadeOut = (1 - Math.cos(Math.PI * Math.min(1, (duration - time) / 0.035))) / 2
+  return fadeIn * fadeOut * Math.exp(-time / decay)
+}
+
+/** Soft tuned resonator: most energy stays in the fundamental, with a quiet rounded overtone. */
+function note(time, frequency, duration, attack = 0.008, decay = 0.06) {
+  const phase = 2 * Math.PI * frequency * time
+  return (
+    envelope(time, duration, attack, decay) *
+    (Math.sin(phase) + 0.12 * Math.sin(phase * 2) * Math.exp(-time / 0.025))
+  )
+}
+
+/**
+ * Original quiet console cues, not recordings/samples from another console.
+ * Design reference: PlayStation's UX walkthrough (2020/10/15, blog.playstation.com).
+ * Navigation is a short ceramic tap; confirmation/back are ascending/descending intervals;
+ * launch is a soft suspended chord with a longer tail. No laser-like frequency sweeps.
+ * Mono PCM retains compatibility with the preloaded six-voice HTML audio pool.
+ */
 export function synthesize(name) {
   if (!Object.hasOwn(durations, name)) throw new Error('Unknown sound profile')
   const duration = durations[name],
@@ -23,26 +46,20 @@ export function synthesize(name) {
   wav.write('data', 36)
   wav.writeUInt32LE(count * 2, 40)
   for (let i = 0; i < count; i++) {
-    const time = i / SAMPLE_RATE,
-      fraction = i / (count - 1)
-    const envelope = Math.min(1, time / 0.004) * Math.pow(1 - fraction, 2) * Math.exp(-fraction * 2)
+    const time = i / SAMPLE_RATE
     let sample = 0
     if (name === 'launch') {
-      for (const [index, frequency] of [523.251, 659.255, 783.991, 1046.502].entries()) {
-        const elapsed = time - index * 0.065
-        if (elapsed >= 0)
-          sample +=
-            (Math.sin(2 * Math.PI * frequency * elapsed) *
-              Math.min(1, elapsed / 0.025) *
-              Math.exp(-elapsed * 5)) /
-            4
+      for (const [index, frequency] of [261.626, 391.995, 523.251, 659.255].entries()) {
+        const start = index * 0.055
+        sample += note(time - start, frequency, duration - start, 0.04, 0.24) * 0.17
       }
-      sample *= Math.min(1, (duration - time) / 0.1) * 0.7
+    } else if (name === 'navigate') {
+      sample = note(time, 660, duration, 0.006, 0.019) * 0.38
     } else {
-      const [start, end] =
-        name === 'navigate' ? [420, 210] : name === 'toggle' ? [320, 480] : [400, 260]
-      const phase = 2 * Math.PI * (start * time + ((end - start) * time * time) / (2 * duration))
-      sample = (Math.sin(phase) + 0.16 * Math.sin(phase * 2)) * envelope * 0.48
+      const [first, second] = name === 'toggle' ? [523.251, 783.991] : [659.255, 440]
+      sample =
+        note(time, first, duration, 0.009, 0.045) * 0.3 +
+        note(time - 0.045, second, duration - 0.045, 0.012, 0.05) * 0.24
     }
     wav.writeInt16LE(Math.round(Math.max(-1, Math.min(1, sample)) * 32767), 44 + i * 2)
   }

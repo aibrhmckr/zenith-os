@@ -224,7 +224,11 @@ app.once('browser-window-created', (_, win) => {
         await ev("getComputedStyle(document.querySelector('[data-game-spotlight] h1')).fontWeight"),
         '900'
       )
-      assert(spotlightLogs.length > 0, 'Spotlight data is visible in the renderer console')
+      assert.equal(
+        spotlightLogs.length,
+        0,
+        'Production navigation must not log entire game records'
+      )
       assert.equal(
         await ev("document.querySelector('[data-game-spotlight] h1').textContent"),
         game.title
